@@ -37,7 +37,7 @@ COMMENT ON SCHEMA jazzhands_audit IS 'part of jazzhands project';
 -- \ir ddl/schema/pgsql/build_ins_upd_triggers.sql
 
 SELECT schema_support.rebuild_stamp_triggers('jazzhands'::text);
-SELECT schema_support.build_audit_tables('audit'::text, 'jazzhands'::text);
+SELECT schema_support.build_audit_tables('jazzhands_audit'::text, 'jazzhands'::text);
 
 CREATE SCHEMA jazzhands_cache;
 COMMENT ON SCHEMA jazzhands_cache IS 'cache tables for jazzhands views';
