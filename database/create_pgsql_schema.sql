@@ -25,6 +25,7 @@ select now();
 
 \ir ddl/schema/pgsql/create_schema_support_tables.sql
 \ir ddl/schema/pgsql/create_schema_support.sql
+\ir ddl/schema/pgsql/create_schema_support_cache_tables.sql
 
 \ir ddl/schema/pgsql/create_schema_pgsql.sql
 
@@ -35,8 +36,8 @@ COMMENT ON SCHEMA jazzhands_audit IS 'part of jazzhands project';
 -- \ir ddl/schema/pgsql/build_audit_tables.sql
 -- \ir ddl/schema/pgsql/build_ins_upd_triggers.sql
 
-SELECT schema_support.rebuild_stamp_triggers('jazzhands');
-SELECT schema_support.build_audit_tables('jazzhands_audit', 'jazzhands');
+SELECT schema_support.rebuild_stamp_triggers('jazzhands'::text);
+SELECT schema_support.build_audit_tables('audit'::text, 'jazzhands'::text);
 
 CREATE SCHEMA jazzhands_cache;
 COMMENT ON SCHEMA jazzhands_cache IS 'cache tables for jazzhands views';
