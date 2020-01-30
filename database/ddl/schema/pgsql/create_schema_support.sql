@@ -778,7 +778,7 @@ BEGIN
 	   AND	relpersistence = 't';
 
 	IF _tally = 0 THEN
-		CREATE TEMPORARY TABLE IF NOT EXISTS __regrants (id SERIAL, schema text, object text, newname text, regrant text);
+		CREATE TEMPORARY TABLE IF NOT EXISTS __regrants (id SERIAL, schema text, object text, newname text, regrant text, tags text[]);
 	END IF;
 END;
 $$ LANGUAGE plpgsql SECURITY INVOKER;
@@ -790,7 +790,8 @@ $$ LANGUAGE plpgsql SECURITY INVOKER;
 CREATE OR REPLACE FUNCTION schema_support.save_grants_for_replay_relations(
 	schema varchar,
 	object varchar,
-	newname varchar DEFAULT NULL
+	newname varchar DEFAULT NULL,
+	tags text[] DEFAULT NULL
 ) RETURNS VOID AS $$
 DECLARE
 	_schema		varchar;
@@ -850,7 +851,7 @@ BEGIN
 				RAISE EXCEPTION 'built up grant for %.% (%) is NULL',
 					schema, object, newname;
 	    END IF;
-			INSERT INTO __regrants (schema, object, newname, regrant) values (schema,object, newname, _fullgrant );
+			INSERT INTO __regrants (schema, object, newname, regrant, tags) values (schema,object, newname, _fullgrant, tags );
 		END LOOP;
 	END LOOP;
 
@@ -901,7 +902,7 @@ BEGIN
 				RAISE EXCEPTION 'built up grant for %.% (%) is NULL',
 					schema, object, newname;
 	    END IF;
-			INSERT INTO __regrants (schema, object, newname, regrant) values (schema,object, newname, _fullgrant );
+			INSERT INTO __regrants (schema, object, newname, regrant, tags) values (schema,object, newname, _fullgrant, tags );
 		END LOOP;
 	END LOOP;
 
@@ -915,7 +916,8 @@ $$ LANGUAGE plpgsql SECURITY INVOKER;
 CREATE OR REPLACE FUNCTION schema_support.save_grants_for_replay_functions(
 	schema varchar,
 	object varchar,
-	newname varchar DEFAULT NULL
+	newname varchar DEFAULT NULL,
+	tags text[] DEFAULT NULL
 ) RETURNS VOID AS $$
 DECLARE
 	_schema		varchar;
@@ -960,7 +962,7 @@ BEGIN
 				newname || '(' || _procs.args || ')  to ' ||
 				_role || _grant;
 			-- RAISE DEBUG 'inserting % for %', _fullgrant, _perm;
-			INSERT INTO __regrants (schema, object, newname, regrant) values (schema,object, newname, _fullgrant );
+			INSERT INTO __regrants (schema, object, newname, regrant, tags) values (schema,object, newname, _fullgrant, tags );
 		END LOOP;
 	END LOOP;
 END;
@@ -972,11 +974,12 @@ $$ LANGUAGE plpgsql SECURITY INVOKER;
 CREATE OR REPLACE FUNCTION schema_support.save_grants_for_replay(
 	schema varchar,
 	object varchar,
-	newname varchar DEFAULT NULL
+	newname varchar DEFAULT NULL,
+	tags text[] DEFAULT NULL
 ) RETURNS VOID AS $$
 BEGIN
-	PERFORM schema_support.save_grants_for_replay_relations(schema, object, newname);
-	PERFORM schema_support.save_grants_for_replay_functions(schema, object, newname);
+	PERFORM schema_support.save_grants_for_replay_relations(schema, object, newname, tags);
+	PERFORM schema_support.save_grants_for_replay_functions(schema, object, newname, tags);
 END;
 $$ LANGUAGE plpgsql SECURITY INVOKER;
 
@@ -984,7 +987,8 @@ $$ LANGUAGE plpgsql SECURITY INVOKER;
 -- replay saved grants, drop temporary tables
 --
 CREATE OR REPLACE FUNCTION schema_support.replay_saved_grants(
-	beverbose	boolean DEFAULT false
+	beverbose	boolean DEFAULT false,
+	tags		text[] DEFAULT NULL
 )
 RETURNS VOID AS $$
 DECLARE
@@ -1000,6 +1004,10 @@ BEGIN
 	IF _tally > 0 THEN
 	    FOR _r in SELECT * from __regrants FOR UPDATE
 	    LOOP
+			if tags IS NOT NULL THEN
+				CONTINUE WHEN _r.tags IS NULL;
+				CONTINUE WHEN NOT _r.tags && tags;
+			END IF;
 		    IF beverbose THEN
 			    RAISE NOTICE 'Regrant Executing: %', _r.regrant;
 		    END IF;
@@ -1039,7 +1047,7 @@ BEGIN
 	   AND	relpersistence = 't';
 
 	IF _tally = 0 THEN
-		CREATE TEMPORARY TABLE IF NOT EXISTS __recreate (id SERIAL, schema text, object text, owner text, type text, ddl text, idargs text);
+		CREATE TEMPORARY TABLE IF NOT EXISTS __recreate (id SERIAL, schema text, object text, owner text, type text, ddl text, idargs text, tags text[]);
 	END IF;
 END;
 $$ LANGUAGE plpgsql SECURITY INVOKER;
@@ -1051,7 +1059,8 @@ $$ LANGUAGE plpgsql SECURITY INVOKER;
 CREATE OR REPLACE FUNCTION schema_support.save_view_for_replay(
 	schema varchar,
 	object varchar,
-	dropit boolean DEFAULT true
+	dropit boolean DEFAULT true,
+	tags text[] DEFAULT NULL
 ) RETURNS VOID AS $$
 DECLARE
 	_r		RECORD;
@@ -1064,10 +1073,10 @@ BEGIN
 	PERFORM schema_support.prepare_for_object_replay();
 
 	-- implicitly save regrants
-	PERFORM schema_support.save_grants_for_replay(schema, object);
+	PERFORM schema_support.save_grants_for_replay(schema, object, object, tags);
 
 	-- save any triggers on the view
-	PERFORM schema_support.save_trigger_for_replay(schema, object, dropit);
+	PERFORM schema_support.save_trigger_for_replay(schema, object, dropit, tags);
 
 	-- now save the view
 	FOR _r in SELECT c.oid, n.nspname, c.relname, 'view',
@@ -1113,18 +1122,18 @@ BEGIN
 				_ddl := 'ALTER VIEW ' || quote_ident(schema) || '.' ||
 					quote_ident(object) || ' ALTER COLUMN ' ||
 					quote_ident(_c.colname) || ' SET DEFAULT ' || _c.def;
-				INSERT INTO __recreate (schema, object, type, ddl )
+				INSERT INTO __recreate (schema, object, type, ddl, tags )
 					VALUES (
-						_r.nspname, _r.relname, 'default', _ddl
+						_r.nspname, _r.relname, 'default', _ddl, tags
 					);
 			END IF;
 			IF _c.comment IS NOT NULL THEN
 				_ddl := 'COMMENT ON COLUMN ' ||
 					quote_ident(schema) || '.' || quote_ident(object)
 					' IS ''' || _c.comment || '''';
-				INSERT INTO __recreate (schema, object, type, ddl )
+				INSERT INTO __recreate (schema, object, type, ddl, tags )
 					VALUES (
-						_r.nspname, _r.relname, 'colcomment', _ddl
+						_r.nspname, _r.relname, 'colcomment', _ddl, tags
 					);
 			END IF;
 
@@ -1141,9 +1150,9 @@ BEGIN
 		IF _ddl is NULL THEN
 			RAISE EXCEPTION 'Unable to define view for %', _r;
 		END IF;
-		INSERT INTO __recreate (schema, object, owner, type, ddl )
+		INSERT INTO __recreate (schema, object, owner, type, ddl, tags )
 			VALUES (
-				_r.nspname, _r.relname, _r.owner, _typ, _ddl
+				_r.nspname, _r.relname, _r.owner, _typ, _ddl, tags
 			);
 		IF dropit  THEN
 			_cmd = 'DROP ' || _mat || _r.nspname || '.' || _r.relname || ';';
@@ -1165,7 +1174,8 @@ CREATE OR REPLACE FUNCTION schema_support.save_dependent_objects_for_replay(
 	schema varchar,
 	object varchar,
 	dropit boolean DEFAULT true,
-	doobjectdeps boolean DEFAULT false
+	doobjectdeps boolean DEFAULT false,
+	tags text[] DEFAULT NULL
 ) RETURNS VOID AS $$
 DECLARE
 	_r		RECORD;
@@ -1184,9 +1194,9 @@ BEGIN
 			  AND	  n.nspname = schema
 	LOOP
 		-- RAISE NOTICE '1 dealing with  %.%', _r.nspname, _r.proname;
-		PERFORM schema_support.save_constraint_for_replay(_r.nspname, _r.proname, dropit);
-		PERFORM schema_support.save_dependent_objects_for_replay(_r.nspname, _r.proname, dropit);
-		PERFORM schema_support.save_function_for_replay(_r.nspname, _r.proname, dropit);
+		PERFORM schema_support.save_constraint_for_replay(_r.nspname, _r.proname, dropit, tags);
+		PERFORM schema_support.save_dependent_objects_for_replay(_r.nspname, _r.proname, dropit, doobjectdeps, tags);
+		PERFORM schema_support.save_function_for_replay(_r.nspname, _r.proname, dropit, tags);
 	END LOOP;
 
 	-- save any triggers on the view
@@ -1204,13 +1214,13 @@ BEGIN
 	LOOP
 		IF _r.relkind = 'v' OR _r.relkind = 'm' THEN
 			-- RAISE NOTICE '2 dealing with  %.%', _r.nspname, _r.relname;
-			PERFORM * FROM save_dependent_objects_for_replay(_r.nspname, _r.relname, dropit);
-			PERFORM schema_support.save_view_for_replay(_r.nspname, _r.relname, dropit);
+			PERFORM * FROM save_dependent_objects_for_replay(_r.nspname, _r.relname, dropit, doobjectdeps, tags);
+			PERFORM schema_support.save_view_for_replay(_r.nspname, _r.relname, dropit, tags);
 		END IF;
 	END LOOP;
 	IF doobjectdeps THEN
-		PERFORM schema_support.save_trigger_for_replay(schema, object, dropit);
-		PERFORM schema_support.save_constraint_for_replay('jazzhands', 'table');
+		PERFORM schema_support.save_trigger_for_replay(schema, object, dropit, tags);
+		PERFORM schema_support.save_constraint_for_replay('jazzhands', 'table', tags);
 	END IF;
 END;
 $$
@@ -1224,7 +1234,8 @@ SECURITY INVOKER;
 CREATE OR REPLACE FUNCTION schema_support.save_trigger_for_replay(
 	schema varchar,
 	object varchar,
-	dropit boolean DEFAULT true
+	dropit boolean DEFAULT true,
+	tags text[] DEFAULT NULL
 ) RETURNS VOID AS $$
 DECLARE
 	_r		RECORD;
@@ -1240,9 +1251,9 @@ BEGIN
 			INNER JOIN pg_namespace n on n.oid = c.relnamespace
 		WHERE n.nspname = schema and c.relname = object
 	LOOP
-		INSERT INTO __recreate (schema, object, type, ddl )
+		INSERT INTO __recreate (schema, object, type, ddl, tags )
 			VALUES (
-				_r.nspname, _r.relname, 'trigger', _r.def
+				_r.nspname, _r.relname, 'trigger', _r.def, tags
 			);
 		IF dropit  THEN
 			_cmd = 'DROP TRIGGER ' || _r.tgname || ' ON ' ||
@@ -1260,7 +1271,8 @@ $$ LANGUAGE plpgsql SECURITY INVOKER;
 CREATE OR REPLACE FUNCTION schema_support.save_constraint_for_replay(
 	schema varchar,
 	object varchar,
-	dropit boolean DEFAULT true
+	dropit boolean DEFAULT true,
+	tags text[] DEFAULT NULL
 ) RETURNS VOID AS $$
 DECLARE
 	_r		RECORD;
@@ -1288,9 +1300,9 @@ BEGIN
 		IF _ddl is NULL THEN
 			RAISE EXCEPTION 'Unable to define constraint for %', _r;
 		END IF;
-		INSERT INTO __recreate (schema, object, type, ddl )
+		INSERT INTO __recreate (schema, object, type, ddl, tags )
 			VALUES (
-				_r.nspname, _r.relname, 'constraint', _ddl
+				_r.nspname, _r.relname, 'constraint', _ddl, tags
 			);
 		IF dropit  THEN
 			_cmd = 'ALTER TABLE ' || _r.nspname || '.' || _r.relname ||
@@ -1310,7 +1322,8 @@ $$ LANGUAGE plpgsql SECURITY INVOKER;
 CREATE OR REPLACE FUNCTION schema_support.save_function_for_replay(
 	schema varchar,
 	object varchar,
-	dropit boolean DEFAULT true
+	dropit boolean DEFAULT true,
+	tags text[] DEFAULT NULL
 ) RETURNS VOID AS $$
 DECLARE
 	_r		RECORD;
@@ -1319,7 +1332,7 @@ BEGIN
 	PERFORM schema_support.prepare_for_object_replay();
 
 	-- implicitly save regrants
-	PERFORM schema_support.save_grants_for_replay(schema, object);
+	PERFORM schema_support.save_grants_for_replay(schema, object, object, tags);
 	FOR _r IN SELECT n.nspname, p.proname,
 				coalesce(u.usename, 'public') as owner,
 				pg_get_functiondef(p.oid) as funcdef,
@@ -1331,9 +1344,11 @@ BEGIN
 		WHERE   n.nspname = schema
 		  AND	p.proname = object
 	LOOP
-		INSERT INTO __recreate (schema, object, type, owner, ddl, idargs )
-		VALUES (
-			_r.nspname, _r.proname, 'function', _r.owner, _r.funcdef, _r.idargs
+		INSERT INTO __recreate (schema, object, type, owner,
+			ddl, idargs, tags
+		) VALUES (
+			_r.nspname, _r.proname, 'function', _r.owner,
+			_r.funcdef, _r.idarg, tags
 		);
 		IF dropit  THEN
 			_cmd = 'DROP FUNCTION ' || _r.nspname || '.' ||
@@ -1347,7 +1362,8 @@ END;
 $$ LANGUAGE plpgsql SECURITY INVOKER;
 
 CREATE OR REPLACE FUNCTION schema_support.replay_object_recreates(
-	beverbose	boolean DEFAULT false
+	beverbose	boolean DEFAULT false,
+	tags		text[] DEFAULT NULL
 )
 RETURNS VOID AS $$
 DECLARE
@@ -1366,6 +1382,10 @@ BEGIN
 	IF _tally > 0 THEN
 		FOR _r in SELECT * from __recreate ORDER BY id DESC FOR UPDATE
 		LOOP
+			IF tags IS NOT NULL THEN
+				CONTINUE WHEN _r.tags IS NULL;
+				CONTINUE WHEN NOT _r.tags && tags;
+			END IF;
 			IF beverbose THEN
 				RAISE NOTICE 'Recreate % %.%', _r.type, _r.schema, _r.object;
 			END IF;
@@ -2309,8 +2329,6 @@ LANGUAGE plpgsql SECURITY INVOKER;
 ----------------------------------------------------------------------------
 -- END materialized view support
 ----------------------------------------------------------------------------
-
-\ir create_schema_support_cache_tables.sql
 
 /**************************************************************
  *  FUNCTIONS
