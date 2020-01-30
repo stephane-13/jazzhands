@@ -34,7 +34,11 @@ FROM jazzhands_audit.account;
 
 
 CREATE OR REPLACE VIEW audit.account_assignd_cert AS
-SELECT "account_id","x509_cert_id","x509_key_usg","key_usage_reason_for_assign","data_ins_user","data_ins_date","data_upd_user","data_upd_date","aud#action","aud#timestamp","aud#realtime","aud#txid","aud#user","aud#seq"
+SELECT "account_id",
+	x509_signed_certificate_id AS x509_cert_id,
+	x509_key_usage AS x509_key_usg,
+	key_usage_reason_for_assignment AS key_usage_reason_for_assign,
+	"data_ins_user","data_ins_date","data_upd_user","data_upd_date","aud#action","aud#timestamp","aud#realtime","aud#txid","aud#user","aud#seq"
 FROM jazzhands_audit.account_assigned_certificate;
 
 

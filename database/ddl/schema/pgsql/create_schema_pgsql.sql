@@ -125,9 +125,9 @@ CREATE INDEX idx_account_account_tpe ON account
 CREATE TABLE account_assigned_certificate
 ( 
 	account_id           integer  NOT NULL ,
-	x509_cert_id         integer  NOT NULL ,
-	x509_key_usg         varchar(50)  NOT NULL ,
-	key_usage_reason_for_assign varchar(50)  NULL ,
+	x509_signed_certificate_id integer  NOT NULL ,
+	x509_key_usage       varchar(50)  NOT NULL ,
+	key_usage_reason_for_assignment varchar(50)  NULL ,
 	data_ins_user        varchar(255)  NULL ,
 	data_ins_date        timestamp with time zone  NULL ,
 	data_upd_user        varchar(255)  NULL ,
@@ -135,7 +135,7 @@ CREATE TABLE account_assigned_certificate
 );
 
 ALTER TABLE account_assigned_certificate
-	ADD CONSTRAINT "pk_account_assigned_cer" PRIMARY KEY (account_id,x509_cert_id,x509_key_usg);
+	ADD CONSTRAINT "pk_account_assigned_cer" PRIMARY KEY (account_id,x509_signed_certificate_id,x509_key_usage);
 
 /***********************************************
  * Table: account_auth_log
@@ -7596,12 +7596,12 @@ COMMENT ON COLUMN account.external_id IS 'opaque id used in remote system to ide
 
 
 ALTER TABLE account_assigned_certificate
-	ADD CONSTRAINT "fk_x509_key_usg_attrbt_usr" FOREIGN KEY (x509_cert_id,x509_key_usg) REFERENCES x509_key_usage_attribute(x509_signed_certificate_id,x509_key_usage)
+	ADD CONSTRAINT "fk_x509_key_usg_attrbt_usr" FOREIGN KEY (x509_signed_certificate_id,x509_key_usage) REFERENCES x509_key_usage_attribute(x509_signed_certificate_id,x509_key_usage)
 		ON UPDATE NO ACTION
 		ON DELETE NO ACTION;
 
 ALTER TABLE account_assigned_certificate
-	ADD CONSTRAINT "fk_key_usg_reason_for_assgn_u" FOREIGN KEY (key_usage_reason_for_assign) REFERENCES val_key_usage_reason_for_assignment(key_usage_reason_for_assignment)
+	ADD CONSTRAINT "fk_key_usg_reason_for_assgn_u" FOREIGN KEY (key_usage_reason_for_assignment) REFERENCES val_key_usage_reason_for_assignment(key_usage_reason_for_assignment)
 		ON UPDATE NO ACTION
 		ON DELETE NO ACTION;
 
@@ -7612,11 +7612,11 @@ ALTER TABLE account_assigned_certificate
 
 COMMENT ON TABLE account_assigned_certificate IS 'Actual  assignment of the usage category USER Certificates to System Users.';
 
-COMMENT ON COLUMN account_assigned_certificate.x509_key_usg IS 'Name of the Certificate.';
+COMMENT ON COLUMN account_assigned_certificate.x509_key_usage IS 'Name of the Certificate.';
 
-COMMENT ON COLUMN account_assigned_certificate.x509_cert_id IS 'Uniquely identifies Certificate';
+COMMENT ON COLUMN account_assigned_certificate.x509_signed_certificate_id IS 'Uniquely identifies Certificate';
 
-COMMENT ON COLUMN account_assigned_certificate.key_usage_reason_for_assign IS 'Uniquely identifies and indicates reason for assignment.';
+COMMENT ON COLUMN account_assigned_certificate.key_usage_reason_for_assignment IS 'Uniquely identifies and indicates reason for assignment.';
 
 
 ALTER TABLE account_auth_log

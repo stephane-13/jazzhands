@@ -1348,7 +1348,7 @@ BEGIN
 			ddl, idargs, tags
 		) VALUES (
 			_r.nspname, _r.proname, 'function', _r.owner,
-			_r.funcdef, _r.idarg, tags
+			_r.funcdef, _r.idargs, tags
 		);
 		IF dropit  THEN
 			_cmd = 'DROP FUNCTION ' || _r.nspname || '.' ||

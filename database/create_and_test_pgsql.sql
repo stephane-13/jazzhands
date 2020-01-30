@@ -1,5 +1,5 @@
 /*
- * Copyright (c) 2013-2015 Todd Kover
+ * Copyright (c) 2013-2020 Todd Kover
  * All rights reserved.
  *
  * Licensed under the Apache License, Version 2.0 (the "License");
@@ -29,6 +29,8 @@
 -- psql -e --user=postgres postgres -f create_and_test_pgsql.sql
 --
 \set ON_ERROR_STOP
+
+\pset pager off
 
 select timeofday(), now();
 
