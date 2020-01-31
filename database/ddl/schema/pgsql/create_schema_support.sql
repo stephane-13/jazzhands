@@ -1047,7 +1047,7 @@ BEGIN
 	   AND	relpersistence = 't';
 
 	IF _tally = 0 THEN
-		CREATE TEMPORARY TABLE IF NOT EXISTS __recreate (id SERIAL, schema text, object text, owner text, type text, ddl text, idargs text, tags text[]);
+		CREATE TEMPORARY TABLE IF NOT EXISTS __recreate (id SERIAL, schema text, object text, owner text, type text, ddl text, idargs text, tags text[], path text[]);
 	END IF;
 END;
 $$ LANGUAGE plpgsql SECURITY INVOKER;
@@ -1060,7 +1060,8 @@ CREATE OR REPLACE FUNCTION schema_support.save_view_for_replay(
 	schema varchar,
 	object varchar,
 	dropit boolean DEFAULT true,
-	tags text[] DEFAULT NULL
+	tags text[] DEFAULT NULL,
+	path text[] DEFAULT NULL
 ) RETURNS VOID AS $$
 DECLARE
 	_r		RECORD;
@@ -1070,13 +1071,14 @@ DECLARE
 	_mat	TEXT;
 	_typ	TEXT;
 BEGIN
+	path = path || concat(schema, '.', object);
 	PERFORM schema_support.prepare_for_object_replay();
 
 	-- implicitly save regrants
 	PERFORM schema_support.save_grants_for_replay(schema, object, object, tags);
 
 	-- save any triggers on the view
-	PERFORM schema_support.save_trigger_for_replay(schema, object, dropit, tags);
+	PERFORM schema_support.save_trigger_for_replay(schema, object, dropit, tags, path);
 
 	-- now save the view
 	FOR _r in SELECT c.oid, n.nspname, c.relname, 'view',
@@ -1122,18 +1124,18 @@ BEGIN
 				_ddl := 'ALTER VIEW ' || quote_ident(schema) || '.' ||
 					quote_ident(object) || ' ALTER COLUMN ' ||
 					quote_ident(_c.colname) || ' SET DEFAULT ' || _c.def;
-				INSERT INTO __recreate (schema, object, type, ddl, tags )
+				INSERT INTO __recreate (schema, object, type, ddl, tags, path )
 					VALUES (
-						_r.nspname, _r.relname, 'default', _ddl, tags
+						_r.nspname, _r.relname, 'default', _ddl, tags, path
 					);
 			END IF;
 			IF _c.comment IS NOT NULL THEN
 				_ddl := 'COMMENT ON COLUMN ' ||
 					quote_ident(schema) || '.' || quote_ident(object)
 					' IS ''' || _c.comment || '''';
-				INSERT INTO __recreate (schema, object, type, ddl, tags )
+				INSERT INTO __recreate (schema, object, type, ddl, tags, path )
 					VALUES (
-						_r.nspname, _r.relname, 'colcomment', _ddl, tags
+						_r.nspname, _r.relname, 'colcomment', _ddl, tags, path
 					);
 			END IF;
 
@@ -1150,9 +1152,9 @@ BEGIN
 		IF _ddl is NULL THEN
 			RAISE EXCEPTION 'Unable to define view for %', _r;
 		END IF;
-		INSERT INTO __recreate (schema, object, owner, type, ddl, tags )
+		INSERT INTO __recreate (schema, object, owner, type, ddl, tags, path )
 			VALUES (
-				_r.nspname, _r.relname, _r.owner, _typ, _ddl, tags
+				_r.nspname, _r.relname, _r.owner, _typ, _ddl, tags, path
 			);
 		IF dropit  THEN
 			_cmd = 'DROP ' || _mat || _r.nspname || '.' || _r.relname || ';';
@@ -1175,7 +1177,8 @@ CREATE OR REPLACE FUNCTION schema_support.save_dependent_objects_for_replay(
 	object varchar,
 	dropit boolean DEFAULT true,
 	doobjectdeps boolean DEFAULT false,
-	tags text[] DEFAULT NULL
+	tags text[] DEFAULT NULL,
+	path text[] DEFAULT NULL
 ) RETURNS VOID AS $$
 DECLARE
 	_r		RECORD;
@@ -1183,6 +1186,7 @@ DECLARE
 	_ddl	TEXT;
 BEGIN
 	RAISE DEBUG 'processing %.%', schema, object;
+	path = path || concat(schema, '.', object);
 	-- process stored procedures
 	FOR _r in SELECT  distinct np.nspname::text, dependent.proname::text
 		FROM   pg_depend dep
@@ -1194,9 +1198,9 @@ BEGIN
 			  AND	  n.nspname = schema
 	LOOP
 		-- RAISE NOTICE '1 dealing with  %.%', _r.nspname, _r.proname;
-		PERFORM schema_support.save_constraint_for_replay(_r.nspname, _r.proname, dropit, tags);
-		PERFORM schema_support.save_dependent_objects_for_replay(_r.nspname, _r.proname, dropit, doobjectdeps, tags);
-		PERFORM schema_support.save_function_for_replay(_r.nspname, _r.proname, dropit, tags);
+		PERFORM schema_support.save_constraint_for_replay(_r.nspname, _r.proname, dropit, tags, path);
+		PERFORM schema_support.save_dependent_objects_for_replay(_r.nspname, _r.proname, dropit, doobjectdeps, tags, path);
+		PERFORM schema_support.save_function_for_replay(_r.nspname, _r.proname, dropit, tags, path);
 	END LOOP;
 
 	-- save any triggers on the view
@@ -1214,13 +1218,13 @@ BEGIN
 	LOOP
 		IF _r.relkind = 'v' OR _r.relkind = 'm' THEN
 			-- RAISE NOTICE '2 dealing with  %.%', _r.nspname, _r.relname;
-			PERFORM * FROM save_dependent_objects_for_replay(_r.nspname, _r.relname, dropit, doobjectdeps, tags);
-			PERFORM schema_support.save_view_for_replay(_r.nspname, _r.relname, dropit, tags);
+			PERFORM * FROM save_dependent_objects_for_replay(_r.nspname, _r.relname, dropit, doobjectdeps, tags, path);
+			PERFORM schema_support.save_view_for_replay(_r.nspname, _r.relname, dropit, tags, path);
 		END IF;
 	END LOOP;
 	IF doobjectdeps THEN
-		PERFORM schema_support.save_trigger_for_replay(schema, object, dropit, tags);
-		PERFORM schema_support.save_constraint_for_replay('jazzhands', 'table', tags);
+		PERFORM schema_support.save_trigger_for_replay(schema, object, dropit, tags, path);
+		PERFORM schema_support.save_constraint_for_replay('jazzhands', 'table', tags, path);
 	END IF;
 END;
 $$
@@ -1235,12 +1239,14 @@ CREATE OR REPLACE FUNCTION schema_support.save_trigger_for_replay(
 	schema varchar,
 	object varchar,
 	dropit boolean DEFAULT true,
-	tags text[] DEFAULT NULL
+	tags text[] DEFAULT NULL,
+	path text[] DEFAULT NULL
 ) RETURNS VOID AS $$
 DECLARE
 	_r		RECORD;
 	_cmd	TEXT;
 BEGIN
+	path = path || concat(schema, '.', object);
 	PERFORM schema_support.prepare_for_object_replay();
 
 	FOR _r in
@@ -1251,9 +1257,9 @@ BEGIN
 			INNER JOIN pg_namespace n on n.oid = c.relnamespace
 		WHERE n.nspname = schema and c.relname = object
 	LOOP
-		INSERT INTO __recreate (schema, object, type, ddl, tags )
+		INSERT INTO __recreate (schema, object, type, ddl, tags , path)
 			VALUES (
-				_r.nspname, _r.relname, 'trigger', _r.def, tags
+				_r.nspname, _r.relname, 'trigger', _r.def, tags, path
 			);
 		IF dropit  THEN
 			_cmd = 'DROP TRIGGER ' || _r.tgname || ' ON ' ||
@@ -1272,7 +1278,8 @@ CREATE OR REPLACE FUNCTION schema_support.save_constraint_for_replay(
 	schema varchar,
 	object varchar,
 	dropit boolean DEFAULT true,
-	tags text[] DEFAULT NULL
+	tags text[] DEFAULT NULL,
+	path text[] DEFAULT NULL
 ) RETURNS VOID AS $$
 DECLARE
 	_r		RECORD;
@@ -1300,9 +1307,9 @@ BEGIN
 		IF _ddl is NULL THEN
 			RAISE EXCEPTION 'Unable to define constraint for %', _r;
 		END IF;
-		INSERT INTO __recreate (schema, object, type, ddl, tags )
+		INSERT INTO __recreate (schema, object, type, ddl, tags , path)
 			VALUES (
-				_r.nspname, _r.relname, 'constraint', _ddl, tags
+				_r.nspname, _r.relname, 'constraint', _ddl, tags, path
 			);
 		IF dropit  THEN
 			_cmd = 'ALTER TABLE ' || _r.nspname || '.' || _r.relname ||
@@ -1323,12 +1330,14 @@ CREATE OR REPLACE FUNCTION schema_support.save_function_for_replay(
 	schema varchar,
 	object varchar,
 	dropit boolean DEFAULT true,
-	tags text[] DEFAULT NULL
+	tags text[] DEFAULT NULL,
+	path text[] DEFAULT NULL
 ) RETURNS VOID AS $$
 DECLARE
 	_r		RECORD;
 	_cmd	TEXT;
 BEGIN
+	path = path || concat(schema, '.', object);
 	PERFORM schema_support.prepare_for_object_replay();
 
 	-- implicitly save regrants
@@ -1345,10 +1354,10 @@ BEGIN
 		  AND	p.proname = object
 	LOOP
 		INSERT INTO __recreate (schema, object, type, owner,
-			ddl, idargs, tags
+			ddl, idargs, tags, path
 		) VALUES (
 			_r.nspname, _r.proname, 'function', _r.owner,
-			_r.funcdef, _r.idargs, tags
+			_r.funcdef, _r.idargs, tags, path
 		);
 		IF dropit  THEN
 			_cmd = 'DROP FUNCTION ' || _r.nspname || '.' ||
@@ -1357,13 +1366,21 @@ BEGIN
 		END IF;
 
 	END LOOP;
-
 END;
 $$ LANGUAGE plpgsql SECURITY INVOKER;
 
+--
+-- If tags is set, replays just the rows with those tags
+-- If object/schema are set, further refines to replay objects
+-- if path is set, include objects that have input path in path
+-- with those names.
+--
 CREATE OR REPLACE FUNCTION schema_support.replay_object_recreates(
 	beverbose	boolean DEFAULT false,
-	tags		text[] DEFAULT NULL
+	tags		text[] DEFAULT NULL,
+	schema		text DEFAULT NULL,
+	object		text DEFAULT NULL,
+	path		text DEFAULT NULL
 )
 RETURNS VOID AS $$
 DECLARE
@@ -1386,6 +1403,20 @@ BEGIN
 				CONTINUE WHEN _r.tags IS NULL;
 				CONTINUE WHEN NOT _r.tags && tags;
 			END IF;
+			IF schema IS NOT NULL THEN
+				CONTINUE WHEN _r.schema IS NULL;
+				CONTINUE WHEN NOT _r.schema = schema;
+			END IF;
+			IF object IS NOT NULL THEN
+				CONTINUE WHEN _r.object IS NULL;
+				IF object ~ '^!' THEN
+					object = regexp_replace(object, '^!', '');
+					CONTINUE WHEN _r.object = object;
+				ELSE
+					CONTINUE WHEN NOT _r.object = object;
+				END IF;
+			END IF;
+
 			IF beverbose THEN
 				RAISE NOTICE 'Recreate % %.%', _r.type, _r.schema, _r.object;
 			END IF;
@@ -1406,8 +1437,11 @@ BEGIN
 		END LOOP;
 
 		SELECT count(*) INTO _tally from __recreate;
+
 		IF _tally > 0 THEN
-			RAISE EXCEPTION '% objects still exist for recreating after a complete loop', _tally;
+			IF tags IS NULL AND schema IS NULL and object IS NULL THEN
+				RAISE EXCEPTION '% objects still exist for recreating after a complete loop', _tally;
+			END IF;
 		ELSE
 			DROP TABLE __recreate;
 		END IF;
