@@ -1,4 +1,5 @@
 -- Copyright (c) 2016, Kurt Adam
+-- Copyright (c) 2020, Todd Kove
 -- All rights reserved.
 --
 -- Licensed under the Apache License, Version 2.0 (the "License");
@@ -13,7 +14,7 @@
 -- See the License for the specific language governing permissions and
 -- limitations under the License.
 
-CREATE OR REPLACE VIEW v_dev_col_device_root AS
+CREATE OR REPLACE VIEW v_device_collection_device_root AS
 WITH x AS (
 	SELECT
 		dcd.device_id,

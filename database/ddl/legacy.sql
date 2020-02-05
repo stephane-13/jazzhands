@@ -2006,7 +2006,7 @@ FROM jazzhands.v_department_company_expanded;
 
 CREATE OR REPLACE VIEW jazzhands_legacy.v_dev_col_device_root AS
 SELECT device_id,root_id,root_name,root_type,leaf_id,leaf_name,leaf_type
-FROM jazzhands.v_dev_col_device_root;
+FROM jazzhands.v_device_collection_device_root;
 
 
 
