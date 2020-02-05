@@ -1380,6 +1380,7 @@ CREATE OR REPLACE FUNCTION schema_support.replay_object_recreates(
 	tags		text[] DEFAULT NULL,
 	schema		text DEFAULT NULL,
 	object		text DEFAULT NULL,
+	type		text DEFAULT NULL,
 	path		text DEFAULT NULL
 )
 RETURNS VOID AS $$
@@ -1406,6 +1407,10 @@ BEGIN
 			IF schema IS NOT NULL THEN
 				CONTINUE WHEN _r.schema IS NULL;
 				CONTINUE WHEN NOT _r.schema = schema;
+			END IF;
+			IF type IS NOT NULL THEN
+				CONTINUE WHEN _r.type IS NULL;
+				CONTINUE WHEN NOT _r.type = type;
 			END IF;
 			IF object IS NOT NULL THEN
 				CONTINUE WHEN _r.object IS NULL;
