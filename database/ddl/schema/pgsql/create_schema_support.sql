@@ -1198,7 +1198,7 @@ BEGIN
 			  AND	  n.nspname = schema
 	LOOP
 		-- RAISE NOTICE '1 dealing with  %.%', _r.nspname, _r.proname;
-		PERFORM schema_support.save_constraint_for_replay(_r.nspname, _r.proname, dropit, tags, path);
+		PERFORM schema_support.save_constraint_for_replay(schema := _r.nspname, object := _r.proname, dropit := dropit, tags := tags, path := path);
 		PERFORM schema_support.save_dependent_objects_for_replay(_r.nspname, _r.proname, dropit, doobjectdeps, tags, path);
 		PERFORM schema_support.save_function_for_replay(_r.nspname, _r.proname, dropit, tags, path);
 	END LOOP;
@@ -1224,7 +1224,7 @@ BEGIN
 	END LOOP;
 	IF doobjectdeps THEN
 		PERFORM schema_support.save_trigger_for_replay(schema, object, dropit, tags, path);
-		PERFORM schema_support.save_constraint_for_replay('jazzhands', 'table', tags, path);
+		PERFORM schema_support.save_constraint_for_replay(schema := 'jazzhands', object := 'table', tags := tags, path := path);
 	END IF;
 END;
 $$
@@ -1278,6 +1278,8 @@ CREATE OR REPLACE FUNCTION schema_support.save_constraint_for_replay(
 	schema varchar,
 	object varchar,
 	dropit boolean DEFAULT true,
+	newobject varchar DEFAULT NULL,
+	newmap jsonb DEFAULT NULL,
 	tags text[] DEFAULT NULL,
 	path text[] DEFAULT NULL
 ) RETURNS VOID AS $$
@@ -1285,25 +1287,99 @@ DECLARE
 	_r		RECORD;
 	_cmd	TEXT;
 	_ddl	TEXT;
+	_def	TEXT;
+	_cols	TEXT;
+	_myname	TEXT;
 BEGIN
 	PERFORM schema_support.prepare_for_object_replay();
 
-	FOR _r in	SELECT n.nspname, c.relname, con.conname,
-				pg_get_constraintdef(con.oid, true) as def
-		FROM pg_constraint con
-			INNER JOIN pg_class c on (c.relnamespace, c.oid) =
-				(con.connamespace, con.conrelid)
-			INNER JOIN pg_namespace n on n.oid = c.relnamespace
-		WHERE con.confrelid in (
-			select c.oid
-			from pg_class c
-				inner join pg_namespace n on n.oid = c.relnamespace
-			WHERE c.relname = object
-			AND n.nspname = schema
-		) AND n.nspname != schema
+	--
+	-- This used to be just "def" but a once this was incorporating
+	-- tables and columns changing name, had to construct the definition
+	-- by hand.  yay.  Most of this query is to match the two sides
+	-- together.  This query took way too long to figure out.
+	--
+	FOR _r in
+		SELECT otherside.nspname, otherside.relname, otherside.conname,
+		    pg_get_constraintdef(otherside.oid, true) AS def,
+		    otherside.conname, otherside.condeferrable, otherside.condeferred,
+			otherside.cols as cols,
+		    myside.nspname as mynspname, myside.relname as myrelname,
+		    myside.cols as mycols, myside.conname as myconname
+		FROM
+		    (
+		        SELECT me.oid, n.oid as namespaceid, nspname, relname,
+		                conrelid, conindid, confrelid, conname, connamespace,
+		                condeferrable, condeferred,
+		                array_agg(attname) as cols
+		        FROM (
+		            SELECT con.*, a.attname
+		            FROM
+		                    ( SELECT oid, conrelid, conindid, confrelid,
+					contype, connamespace,
+		                        condeferrable, condeferred, conname,
+					unnest(conkey) as conkey
+		                        FROM pg_constraint
+		                    ) con
+		                JOIN pg_attribute a ON a.attrelid = con.conrelid
+		                        AND a.attnum = con.conkey
+				WHERE contype IN ('f')
+		        ) me
+		                JOIN pg_class c ON c.oid = me.conrelid
+		                JOIN pg_namespace n ON c.relnamespace = n.oid
+		        GROUP BY 1,2,3,4,5,6,7,8,9,10,11
+		    ) otherside JOIN
+		    (
+		        SELECT me.oid, n.oid as namespaceid, nspname, relname,
+		                conrelid, conindid, confrelid, conname, connamespace,
+		                condeferrable, condeferred,
+		                array_agg(attname) as cols
+		        FROM (
+		            SELECT con.*, a.attname
+		            FROM
+		                    ( SELECT oid, conrelid, conindid, confrelid,
+					contype, connamespace,
+		                        condeferrable, condeferred, conname,
+					unnest(conkey) as conkey
+		                        FROM pg_constraint
+		                    ) con
+		                JOIN pg_attribute a ON a.attrelid = con.conrelid
+		                        AND a.attnum = con.conkey
+				WHERE contype IN ('u','p')
+		        ) me
+		                JOIN pg_class c ON c.oid = me.conrelid
+		                JOIN pg_namespace n ON c.relnamespace = n.oid
+		        GROUP BY 1,2,3,4,5,6,7,8,9,10,11
+		    ) myside ON myside.conrelid = otherside.confrelid
+		            AND myside.conindid = otherside.conindid
+		WHERE myside.namespaceid != otherside.namespaceid
+		AND myside.nspname = schema
+		AND myside.relname = object
 	LOOP
+		--
+		-- if my name is changing, reflect that in the recreation
+		--
+		IF newobject IS NOT NULL THEN
+			_myname := newobject;
+		ELSE
+			_myname := object;
+		END IF;
+		_cols := array_to_string(_r.mycols, ',');
+		--
+		-- If newmap is set *AMD* contains a key of the constraint name
+		-- on "my" side, then replace the column list with the new names.
+		--
+		RAISE NOTICE '%', newmap;
+		IF newmap IS NOT NULL AND newmap->>_r.myconname IS NOT NULL THEN
+			SELECT string_agg(x::text, ',') INTO _cols
+				FROM jsonb_array_elements_text(newmap->_r.myconname->'columns') x;
+		END IF;
+		_def := concat('FOREIGN KEY (', array_to_string(_r.cols, ','),
+			') REFERENCES ',
+			schema, '.', _myname, '(', _cols, ')');
+
 		_ddl := 'ALTER TABLE ' || _r.nspname || '.' || _r.relname ||
-			' ADD CONSTRAINT ' || _r.conname || ' ' || _r.def;
+			' ADD CONSTRAINT ' || _r.conname || ' ' || _def;
 		IF _ddl is NULL THEN
 			RAISE EXCEPTION 'Unable to define constraint for %', _r;
 		END IF;
