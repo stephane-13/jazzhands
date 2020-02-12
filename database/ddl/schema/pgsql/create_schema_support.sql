@@ -448,6 +448,7 @@ BEGIN
 		WHERE c.relname =  table_name
 		AND	 n.nspname = tbl_schema
 		AND con.contype in ('p', 'u')
+		ORDER BY CASE WHEN con.contype = 'p' THEN 0 ELSE 1 END, con.conname
 	LOOP
 		name := 'aud_' || quote_ident( table_name || '_' || keys.conname);
 		IF char_length(name) > 63 THEN
@@ -599,30 +600,38 @@ $FUNC$ LANGUAGE plpgsql;
 -- added or there's some other reason to want to do it.
 --
 CREATE OR REPLACE FUNCTION schema_support.rebuild_audit_tables
-    ( aud_schema varchar, tbl_schema varchar )
+	( aud_schema varchar, tbl_schema varchar )
 RETURNS VOID AS $FUNC$
 DECLARE
-     table_list RECORD;
+	 table_list RECORD;
 BEGIN
-    FOR table_list IN
-	SELECT b.table_name::text
-	FROM information_schema.tables b
-		INNER JOIN information_schema.tables a
-			USING (table_name,table_type)
-	WHERE table_type = 'BASE TABLE'
-	AND a.table_schema = aud_schema
-	AND b.table_schema = tbl_schema
-	ORDER BY table_name
-    LOOP
-	PERFORM schema_support.save_dependent_objects_for_replay(aud_schema::varchar, table_list.table_name::varchar);
-	PERFORM schema_support.save_grants_for_replay(aud_schema, table_list.table_name);
-	PERFORM schema_support.rebuild_audit_table
-	    ( aud_schema, tbl_schema, table_list.table_name );
-	PERFORM schema_support.replay_object_recreates();
-	PERFORM schema_support.replay_saved_grants();
-    END LOOP;
+	FOR table_list IN
+		SELECT b.table_name::text
+		FROM information_schema.tables b
+			INNER JOIN information_schema.tables a
+				USING (table_name,table_type)
+		WHERE table_type = 'BASE TABLE'
+		AND a.table_schema = aud_schema
+		AND b.table_schema = tbl_schema
+		ORDER BY table_name
+	LOOP
+		PERFORM schema_support.save_dependent_objects_for_replay(
+			schema := aud_schema::varchar,
+			object := table_list.table_name::varchar,
+			tags:= ARRAY['rebuild_audit_tables']);
+		PERFORM schema_support.save_grants_for_replay(schema := aud_schema,
+			object := table_list.table_name,
+			tags := ARRAY['rebuild_audit_tables']);
+		PERFORM schema_support.rebuild_audit_table
+			( aud_schema, tbl_schema, table_list.table_name );
+		PERFORM schema_support.replay_object_recreates();
+		PERFORM schema_support.replay_saved_grants();
+		END LOOP;
 
-    PERFORM schema_support.rebuild_audit_triggers(aud_schema, tbl_schema);
+	PERFORM schema_support.rebuild_audit_triggers(aud_schema, tbl_schema);
+	PERFORM schema_support.replay_object_recreates(tags := ARRAY['rebuild_audit_tables
+']);
+	PERFORM schema_support.replay_saved_grants(tags := ARRAY['rebuild_audit_tables']);
 END;
 $FUNC$ LANGUAGE plpgsql;
 
@@ -988,7 +997,8 @@ $$ LANGUAGE plpgsql SECURITY INVOKER;
 --
 CREATE OR REPLACE FUNCTION schema_support.replay_saved_grants(
 	beverbose	boolean DEFAULT false,
-	tags		text[] DEFAULT NULL
+	schema		text DEFAULT NULL,
+	tags		text DEFAULT NULL
 )
 RETURNS VOID AS $$
 DECLARE
@@ -1008,6 +1018,10 @@ BEGIN
 				CONTINUE WHEN _r.tags IS NULL;
 				CONTINUE WHEN NOT _r.tags && tags;
 			END IF;
+			if schema IS NOT NULL THEN
+				CONTINUE WHEN _r.schema IS NULL;
+				CONTINUE WHEN _r.schema != schema;
+			END IF;
 		    IF beverbose THEN
 			    RAISE NOTICE 'Regrant Executing: %', _r.regrant;
 		    END IF;
@@ -1017,7 +1031,9 @@ BEGIN
 
 	    SELECT count(*) INTO _tally from __regrants;
 	    IF _tally > 0 THEN
-		    RAISE EXCEPTION 'Grant extractions were run while replaying grants - %.', _tally;
+			IF schema IS NULL AND tags IS NULL THEN
+				RAISE EXCEPTION 'Grant extractions were run while replaying grants - %.', _tally;
+			END IF;
 	    ELSE
 		    DROP TABLE __regrants;
 	    END IF;
@@ -1293,7 +1309,6 @@ DECLARE
 BEGIN
 	PERFORM schema_support.prepare_for_object_replay();
 
-	--
 	-- This used to be just "def" but a once this was incorporating
 	-- tables and columns changing name, had to construct the definition
 	-- by hand.  yay.  Most of this query is to match the two sides
@@ -1369,7 +1384,6 @@ BEGIN
 		-- If newmap is set *AMD* contains a key of the constraint name
 		-- on "my" side, then replace the column list with the new names.
 		--
-		RAISE NOTICE '%', newmap;
 		IF newmap IS NOT NULL AND newmap->>_r.myconname IS NOT NULL THEN
 			SELECT string_agg(x::text, ',') INTO _cols
 				FROM jsonb_array_elements_text(newmap->_r.myconname->'columns') x;
