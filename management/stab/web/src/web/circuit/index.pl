@@ -198,7 +198,7 @@ sub dump_circuit_l1table {
 	my $sth = $stab->prepare(
 		qq{
 		select  ni.network_interface_id,
-			ni.name as network_interface_name,
+			ni.network_interface_name,
 			d.device_id,
 			d.device_name,
 			p.physical_port_id,
@@ -213,7 +213,7 @@ sub dump_circuit_l1table {
 			c.trunk_tcic_start,
 			c.trunk_tcic_end
 		  from  physical_port p
-			inner join v_network_interface_trans ni on
+			inner join network_interface ni on
 				ni.physical_port_id = p.physical_port_id
 			inner join device d on
 				d.device_id = ni.device_id
@@ -228,7 +228,7 @@ sub dump_circuit_l1table {
 				on tg.trunk_group_id = c.trunk_group_id
 		 where  c.circuit_id = :1
 		  and	d.is_locally_managed = 'Y'
-		order by d.device_id, NETWORK_STRINGS.NUMERIC_INTERFACE(ni.name)
+		order by d.device_id, NETWORK_STRINGS.NUMERIC_INTERFACE(ni.network_interface_name)
 	}
 	);
 

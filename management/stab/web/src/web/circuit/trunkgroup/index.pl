@@ -124,7 +124,7 @@ sub dump_tg {
 	my $sth = $stab->prepare(
 		qq{
 		select  ni.network_interface_id,
-			ni.name as network_interface_name,
+			ni.network_interface_name,
 			d.device_name,
 			p.physical_port_id,
 			p.port_name,
@@ -138,7 +138,7 @@ sub dump_tg {
 			c.trunk_tcic_start,
 			c.trunk_tcic_end
 		  from  physical_port p
-			inner join v_network_interface_trans ni on
+			inner join network_interface ni on
 				ni.physical_port_id = p.physical_port_id
 			inner join device d on
 				d.device_id = ni.device_id

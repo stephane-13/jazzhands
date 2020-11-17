@@ -691,7 +691,7 @@ sub start_html {
 	# development.  XXX Probably need to put in a is_dev_instance
 	# function that can be used to discern this throughout the code,
 	# although this is only used in the css for the background and here.
-	if ( $stabroot !~ m,://stab.[^/]+/?$, && $stabroot !~ /dev/ ) {
+	if ( $stabroot !~ m,://stab.[^/]+/?$, && $stabroot !~ /dev[^e]/ ) {
 		$args{'-title'} =~ s/STAB:/STAB(D):/;
 	}
 

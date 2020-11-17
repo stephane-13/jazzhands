@@ -152,7 +152,7 @@ sub device_circuit_tab {
 			c.trunk_tcic_start,
 			c.trunk_tcic_end
 		  from	physical_port p
-			left join v_network_interface_trans ni on
+			left join network_interface ni on
 				ni.physical_port_id = p.physical_port_id
 			left join layer1_connection l1c on
 				(p.physical_port_id = l1c.physical_port1_id OR
@@ -184,7 +184,7 @@ sub device_circuit_tab {
 		$nitype =~ tr/A-Z/a-z/;
 
 		my $Xsth = $self->prepare(
-			"select count(*) from v_network_interface_trans where parent_network_interface_id = ?"
+			"select count(*) from network_interface where parent_network_interface_id = ?"
 		);
 		$Xsth->execute( $hr->{ _dbx('NETWORK_INTERFACE_ID') } )
 		  || $self->return_db_err($Xsth);
@@ -1476,13 +1476,15 @@ sub dump_device_route {
 		   from	static_route sr
 				inner join netblock snb
 					on snb.netblock_id = sr.netblock_id
-				inner join v_network_interface_trans dni
+				inner join network_interface dni
 					on dni.network_interface_id =
 						sr.NETWORK_INTERFACE_DST_ID
+				inner join network_interface_netblock dnin
+					using( network_interface_id )
 				inner join device ddev
 					on ddev.device_id = dni.device_id
 				left join netblock dnb
-					on dni.netblock_id = dnb.netblock_id
+					on dnin.netblock_id = dnb.netblock_id
 		 where	sr.device_src_id = ?
 	}
 	);
@@ -1575,31 +1577,33 @@ sub get_device_netblock_routes {
 			srt.NETWORK_INTERFACE_DST_ID,
 			srt.NETBLOCK_SRC_ID,
 			net_manip.inet_dbtop(snb.ip_address) as source_block_ip,
-			ni.netblock_id as destination_netblock_id,
+			nin.netblock_id as destination_netblock_id,
 			net_manip.inet_dbtop(dnb.ip_address) as destination_ip,
 			dni.network_interface_name,
 			dni.network_interface_id,
 			ddev.device_name,
 			srt.DESCRIPTION
-		 from   STATIC_ROUTE_TEMPLATE srt
+		from   STATIC_ROUTE_TEMPLATE srt
 			inner join netblock snb
 				on snb.netblock_id = srt.netblock_src_id
 			inner join netblock tnb
 				on tnb.netblock_id = srt.netblock_id
 			inner join netblock rnb
 				on net_manip.inet_base(rnb.ip_address, masklen(rnb.ip_address)) =
-					tnb.ip_address
-			inner join v_network_interface_trans ni
-				on rnb.netblock_id = ni.netblock_id
-			inner join v_network_interface_trans dni
+				tnb.ip_address
+			inner join network_interface_netblock nin
+				on rnb.netblock_id = nin.netblock_id
+			inner join network_interface dni
 				on dni.network_interface_id = srt.network_interface_dst_id
+			inner join network_interface_netblock dnin
+				on dni.network_interface_id = dnin.network_interface_id
 			inner join netblock dnb
-				on dni.netblock_id = dnb.netblock_id
+				on dnin.netblock_id = dnb.netblock_id
 			inner join device ddev
 				on dni.device_id = ddev.device_Id
 		where
 			masklen(tnb.ip_address) = masklen(rnb.ip_address)
-		  and   ni.device_id = ?
+		and   ni.device_id = ?
 	}
 	);
 
@@ -1688,9 +1692,11 @@ sub dump_interfaces {
 			dns.dns_name,
 			dns.dns_domain_id,
 			dom.soa_name,
+			dns.should_generate_ptr,
 			net_manip.inet_dbtop(pnb.ip_address) as parent_IP,
 			nb.parent_netblock_id
-		  from	v_network_interface_trans ni
+		from  network_interface ni
+			left join network_interface_netblock nin using( network_interface_id )
 			left join netblock nb using (netblock_id)
 			left join dns_record dns using (netblock_id)
 			left join dns_domain dom using (dns_domain_id)
@@ -1704,13 +1710,60 @@ sub dump_interfaces {
 	my $sth = $self->prepare($q) || $self->return_db_err($dbh);
 	$sth->execute($devid) || $self->return_db_err($sth);
 
+	# Process each record and aggregate dns records for more efficient display
+
+	my @all_processed_values;
+	my %processed_values;
+	my $last_interface_values;
+
 	while ( my ($values) = $sth->fetchrow_hashref ) {
 		last if ( !defined($values) );
 
-		# XXX: These need to be handled!
-		next
-		  if ( $lastid
-			&& $lastid == $values->{ _dbx('NETWORK_INTERFACE_ID') } );
+		# Build a hash of the dns properties
+		my %dns = (
+			'dns_record_id'		=> $values->{ 'dns_record_id' },
+			'dns_name'		=> $values->{ 'dns_name' },
+			'dns_domain_id'		=> $values->{ 'dns_domain_id' },
+			'soa_name'		=> $values->{ 'soa_name'},
+			'should_generate_ptr'	=> $values->{ 'should_generate_ptr'},
+		);
+
+		# If it's the first interface, just populate it from the record
+		if ( ! $lastid ) {
+			foreach ( keys ( %{$values} ) ) {
+				$processed_values{ $_ } = $values->{ $_ };
+			}
+		}
+		# If the interface has changed, save it for later processing
+		if ( $lastid && $lastid != $values->{ _dbx('NETWORK_INTERFACE_ID') } ) {
+			my %tvalues = %processed_values;
+			push( @all_processed_values, \%tvalues );
+			# Empty and populate the current interface with the new record data
+			%processed_values = ();
+			foreach ( keys ( %{$values} ) ) {
+				$processed_values{ $_ } = $values->{ $_ };
+			}
+		}
+
+		# Add the dns record hash to the current interface
+		if ( $dns{ 'dns_record_id' } ) {
+			push( @{$processed_values{ 'dns_records' }} , \%dns );
+		}
+
+		$lastid = $values->{ _dbx('NETWORK_INTERFACE_ID') };
+	}
+	# Save the last interface for later processing
+	my %tvalues = %processed_values;
+	push( @all_processed_values, \%tvalues );
+
+	# Reset the lastid value for the next loop
+	$lastid = '';
+
+	# Loop on preprocessed interfaces
+	#while ( my ($values) = $sth->fetchrow_hashref ) {
+	foreach my $values ( @all_processed_values ) {
+		#last if ( !defined($values) );
+
 		if ( $collapse eq 'yes' ) {
 			$rv .= $self->build_collapsed_if_box( $values, $devid );
 		} else {
@@ -1785,7 +1838,7 @@ sub build_network_interface_purpose_table($$) {
 		-values   => \@options,
 		-default  => \@set,
 		-labels   => \%labels,
-		-size     => 3,
+		-size     => 4,
 		-multiple => 'true'
 	);
 }
@@ -1796,11 +1849,12 @@ sub build_collapsed_if_box {
 	my $dbh = $self->dbh || die "Could not create dbh";
 	my $cgi = $self->cgi || die "Could not create cgi";
 
+	my $netintid = '';
+
 	my $defchecked = undef;
 
 	my $action_url    = "write/update_interface.pl";
 	my $hidden        = "";
-	my $showxtraclass = "irrelevant";
 
 	my $rowitems = {};
 
@@ -1815,13 +1869,14 @@ sub build_collapsed_if_box {
 			-default => $devid
 		);
 	} else {
+		$netintid = $values->{ _dbx('NETWORK_INTERFACE_ID') };
 		$hidden = $cgi->hidden(
 			-class => 'recordid',
 			-name  => 'NETWORK_INTERFACE_ID_'
-			  . $values->{ _dbx('NETWORK_INTERFACE_ID') },
+			  . $netintid,
 			-id => 'NETWORK_INTERFACE_ID_'
-			  . $values->{ _dbx('NETWORK_INTERFACE_ID') },
-			-default => $values->{ _dbx('NETWORK_INTERFACE_ID') }
+			  . $netintid,
+			-default => $netintid
 		);
 		$delbox = $self->build_checkbox( $values, "",
 			"rm_NETWORK_INTERFACE", 'NETWORK_INTERFACE_ID' );
@@ -1838,9 +1893,174 @@ sub build_collapsed_if_box {
 		$pk = \@pk;
 	}
 
-	my $dns   = "";
-	my $dnsid = "new";
-	if ( $values && $values->{ _dbx('DNS_RECORD_ID') } ) {
+	my $dns = '';
+	my $dnsline = '';
+	my $dnsid = 'new';
+
+	# If there is a DNS record - or more - associated to this interface ip
+	# Display it in non editable mode for security
+	#
+	if ( $values && $values->{ 'dns_records' } && scalar @{$values->{ 'dns_records' }} > 0 ) {
+
+		# Loop on dns records
+		foreach my $dns_record ( @{$values->{ 'dns_records' }} ) {
+
+			$dnsid = $dns_record->{ 'dns_record_id' };
+
+			my $dot = "";
+			if ( $dns_record->{ 'dns_name' } ) {
+				$dot = ".";
+			}
+
+			my $is_ptr;
+			if( $dns_record->{ 'should_generate_ptr' } eq 'Y' ) {
+				$is_ptr = 'PTR ';
+			}
+
+			my $dns_text_name = $cgi->textfield(
+				{
+					-type     => 'text',
+					-class    => 'irrelevant dnsname',
+					-name     => 'DNS_NAME_' . $netintid,
+					-value    => $dns_record->{ 'dns_name' },
+					-disabled => 1,
+				}
+			);
+
+			my $dns_dropdown_domainid = $cgi->popup_menu(
+				{
+					-name  => 'DNS_DOMAIN_ID_' . $netintid,
+					-class => 'irrelevant dnsdomain',
+				}
+			);
+
+			my $dns_hidden_domainid = $cgi->hidden(
+				{
+					-class    => 'dnsdomainid',
+					-name     => '',
+					-value    => $dns_record->{ 'dns_domain_id' },
+					-disabled => 1
+				}
+			);
+
+			my $dns_link = $cgi->a(
+				{
+					-class  => 'intdnsedit',
+					-target => "dns_record_id"
+					  . $dns_record->{ 'dns_record_id' },
+					-href => '../dns/?DNS_RECORD_ID='
+					  . $dns_record->{ 'dns_record_id' },
+				},
+				$dns_record->{ 'dns_name' }
+				  . $dot
+				  . $dns_record->{ 'soa_name' },
+			);
+
+			my $dns_img_edit = $cgi->img(
+				{
+					-src   => "../stabcons/e.png",
+					-alt   => "Edit",
+					-title => 'Edit',
+					-class => 'intdnsedit',
+				}
+			);
+
+			my $dns_img_bluearrow = $cgi->img(
+				{
+					-src   => "../stabcons/arrow.png",
+					-alt   => "DNS Names",
+					-title => 'DNS Names',
+					-class => 'devdnsref',
+				}
+			);
+
+			my $dns_hidden_recordid = $cgi->hidden(
+				{
+					-class    => 'dnsrecordid',
+					-name     => '',
+					-value    => $dns_record->{ 'dns_record_id' },
+					-disabled => 1
+				}
+			);
+
+			my $dns_link_bluearrow = $cgi->a(
+				{
+					-class	=> 'dnsref',
+					-href	=> 'javascript:void(null)',
+					-style  => 'float: right'
+				},
+				$dns_img_bluearrow
+				. $dns_hidden_recordid
+			);
+
+			my $dns_remove = $cgi->checkbox(
+				{
+					-class => 'irrelevant rmrow',
+					-name  => "Del_" . $dns_record->{ 'dns_record_id' },
+					-label => '',
+				}
+			)
+			.$cgi->a(
+				{ -class => 'rmrow' },
+				$cgi->img(
+					{
+					-src   => "../stabcons/redx.jpg",
+					-alt   => "Delete this Record",
+					-title => 'Delete This Record',
+					-class => 'rmdnsrow button',
+					}
+				)
+			);
+
+			$dnsline = $cgi->td (
+				{
+					-style  => 'text-align: left'
+				},
+				$cgi->span(
+					{ -class => 'dnsroot' },
+					$dns_remove
+					.$dns_text_name
+					. $dns_dropdown_domainid
+					. $dns_hidden_domainid
+					. $dns_link
+					.$dns_img_edit
+				)
+				. $dns_link_bluearrow
+			);
+
+			# Prepare a hidden line for the additional DNS records
+			my $dns_tr_refrecords = $cgi->Tr(
+				$cgi->td(
+					{
+						-colspan => 2,
+					},
+					$cgi->div(
+						{
+							-class => 'irrelevant dnsrefcontent_'.$dns_record->{ 'dns_record_id' }
+						}
+					)
+				)
+			);
+
+			# Add this dns line to the dns field
+			$dns .= $cgi->Tr( $dnsline ).$dns_tr_refrecords;
+
+		} # end of loop on dns records
+
+		# wrap all DNS lines in a table
+		$dns =	$cgi->table(
+			{
+			        -width		=> '100%',
+				-border		=> 0,
+				-cellspacing	=> 0,
+				-cellpadding	=> 0,
+				-class		=> 'interfacednstable'
+			},
+			$dns
+		);
+
+	# XXX: unused code - to be removed
+	} elsif ( 0 && $values && $values->{ _dbx('DNS_RECORD_ID') } ) {
 
 		# Note that this code echos bits in dns-common.js for setting up
 		# things in the dns ref table, and this also makes for generic
@@ -1920,65 +2140,103 @@ sub build_collapsed_if_box {
 				}
 			  )
 		  );
+
+	# There is no DNS record associated to this interface ip, display input fields
 	} else {
-		$dns = $self->b_textfield( { -textfield_width => 20 },
-			$values, "DNS_NAME", $pk )
-		  . $self->b_dropdown( $values, "DNS_DOMAIN_ID", $pk );
+		$dns =	$cgi->table(
+			{
+				-border		=> 0,
+				-cellspacing	=> 0,
+				-cellpadding	=> 0,
+				-class		=> 'interfacednstable empty'
+			},
+			$cgi->Tr(
+				$cgi->td(
+					$self->b_textfield( { -textfield_width => 20 },
+						$values, "DNS_NAME", $pk )
+					. $self->b_dropdown( $values, "DNS_DOMAIN_ID", $pk )
+				)
+			)
+		);
 	}
 
 	my $netintpurp =
 	  $self->build_network_interface_purpose_table( $values, $devid );
 
+	my $more_do_not_free_checkbox = '';
+
 	# Build a table for Extras
-	my $xbox = $cgi->table(
-		{ -class => "intmoretable $showxtraclass" },
+	if ( length($delbox) ) {
+		$more_do_not_free_checkbox = $cgi->td(
+			{
+				-class => 'intmoretd',
+			},
+			$self->build_checkbox(
+				$values,                  "Do Not Free IPs on Removal",
+				'rm_NET_INT_preserveips', 'NETWORK_INTERFACE_ID'
+			)
+		);
+	}
+
+	my $more_table = $cgi->table(
+		{ -class => "intmoretable" },
 		$self->build_tr(
 			{},            $values,
 			"b_textfield", "Description",
 			'DESCRIPTION', 'NETWORK_INTERFACE_ID'
-		),
-		$cgi->Tr(
+		)
+		. $cgi->Tr(
+			{ -class => 'intmoretr' },
 			$cgi->td(
+				{
+					-rowspan => 4,
+				},
+				$cgi->b("Select Purpose:").$cgi->br(), $netintpurp )
+			. $cgi->td(
+				{
+					-class => 'intmoretd',
+				},
 				$self->build_checkbox(
 					$values,           "Up",
 					'IS_INTERFACE_UP', 'NETWORK_INTERFACE_ID',
 					$defchecked
 				)
 			)
-		),
-		$cgi->Tr(
+		)
+		. $cgi->Tr(
+			{ -class => 'intmoretr' },
 			$cgi->td(
+				{
+					-class => 'intmoretd',
+				},
 				$self->build_checkbox(
 					$values,         "Should Manage",
 					'SHOULD_MANAGE', 'NETWORK_INTERFACE_ID',
 					$defchecked
 				)
 			)
-		),
-		$cgi->Tr(
+		)
+		. $cgi->Tr(
+			{ -class => 'intmoretr' },
 			$cgi->td(
+				{
+					-class => 'intmoretd',
+				},
 				$self->build_checkbox(
 					$values,          "Should Monitor",
 					'SHOULD_MONITOR', 'NETWORK_INTERFACE_ID',
 					$defchecked
 				)
 			)
+		)
+		. $cgi->Tr(
+			{ -class => 'intmoretr' },
+			$more_do_not_free_checkbox
 		),
-		( length($delbox) )
-		? $cgi->Tr(
-			$cgi->td(
-				$self->build_checkbox(
-					$values,                  "Do Not Free IPs on Removal",
-					'rm_NET_INT_preserveips', 'NETWORK_INTERFACE_ID'
-				)
-			)
-		  )
-		: "",
-		$cgi->Tr( $cgi->td( $cgi->b("Purpose:"), $netintpurp ) ),
 	);
 
 	# Make the extras something that can be clicked on and expanded
-	$xbox = $cgi->a( { -href => '#', -class => 'showmore' }, "More" ) . $xbox;
+	my $more_td = $cgi->td( { -style => "vertical-align:bottom", -class => 'more_expand_td_'.$netintid }, '<div id="more_expand_control_'.$netintid.'" onclick="showhide( this );" class="control_collapsed">&#9650;</div>' );
 
 	my $rv = $cgi->Tr(
 		$rowitems,
@@ -1986,9 +2244,11 @@ sub build_collapsed_if_box {
 		$cgi->td($intname),
 		$cgi->td( $self->b_textfield( $values, "IP",       $pk ) ),
 		$cgi->td( $self->b_textfield( $values, "MAC_ADDR", $pk ) ),
-		$cgi->td($dns),
+		$cgi->td( $dns ),
 		$cgi->td( $self->b_dropdown( $values, 'NETWORK_INTERFACE_TYPE', $pk ) ),
-		$cgi->td($xbox),
+		$more_td,
+	).$cgi->Tr(
+		$cgi->td( { -id => 'more_expand_content_'.$netintid, -class => 'irrelevant', -colspan => 7 }, $more_table )
 	);
 
 	# $self->textfield_sizing(1);
@@ -2178,7 +2438,7 @@ sub build_dns_rr_table {
 		  from	dns_record dns
 				inner join dns_domain dom
 					on dom.dns_domain_id = dns.dns_domain_id
-				inner join v_network_interface_trans ni
+				inner join network_interface_netblock ni
 					on dns.netblock_id = ni.netblock_id
 		 where	ni.network_interface_id = ?
 		  and	dns.dns_record_id != ?

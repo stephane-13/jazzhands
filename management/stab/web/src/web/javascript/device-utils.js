@@ -1038,6 +1038,54 @@ function replace_int_dns_drop (obj, resp)
 	$(name).focus();
 }
 
+/* Function to show / hide elements when a control element is clicked
+   The control and content element ids must match these formats:
+    - control element: xxx_control_nnn
+    - content element: xxx_content_nnn
+   Where xxx is the group identifier and nnn the control/content pair identifier.
+   There can be multiple pairs in a group.
+*/
+function showhide( element ) {
+	// Find the associated (hidden) element with matchging id
+	var strContentId = element.id.replace( 'control', 'content' );
+	targetContentElement = $( '#' + strContentId );
+	if( ! targetContentElement ) {
+		alert('Can not find "More" table');
+		return;
+	}
+
+	// Build the group id for control and content elements
+	var strGroupControlId = element.id.replace( /_[^_]*$/, '' );
+	var strGroupContentId = strContentId.replace( /_[^_]*$/, '' );
+	// Find all control elements belonging to the group, except the targeted one
+	var eOtherControlsInGroup = $( '[id^="' + strGroupControlId + '"]' ).not( '[id="' + element.id + '"]' );
+	// Find all content elements belonging to the group, except the targeted one
+	var eOtherContentsInGroup = $( '[id^="' + strGroupContentId + '"]' ).not( '[id="' + strContentId + '"]' );
+
+	// Is the targeted content element hidden?
+	if (targetContentElement.hasClass('irrelevant') ) {
+		// Update the show/hide icon
+		element.classList.remove( 'control_collapsed' );
+		element.classList.add( 'control_expanded' );
+		// Update the show/hide icon for those other elements
+		if( eOtherControlsInGroup ) {
+			eOtherControlsInGroup.removeClass( 'control_expanded' );
+			eOtherControlsInGroup.addClass( 'control_collapsed' );
+		}
+		// Show it
+		targetContentElement.removeClass('irrelevant');
+		// And hide all content elements of the group, except the targeted one
+		if( eOtherContentsInGroup ) { eOtherContentsInGroup.addClass( 'irrelevant' ); }
+	// The targetet element is visible
+	} else {
+		// Update the show/hide icon
+		element.classList.remove( 'control_expanded' );
+		element.classList.add( 'control_collapsed' );
+		// Hide it
+		targetContentElement.addClass( 'irrelevant' );
+	}
+}
+
 // jQuery magic!
 $(document).ready(function(){
 	// this causes the EDIT button to show up where needed

@@ -242,7 +242,7 @@ sub build_dns_zone {
 		qq{
 		SELECT  d.*, device_id
 		FROM	v_dns_sorted d
-				LEFT JOIN v_network_interface_trans USING (netblock_id)
+				LEFT JOIN network_interface_netblock USING (netblock_id)
 		} . "WHERE " . join( "\nAND ", @limit )
 	) || return $stab->return_db_err;
 

@@ -71,7 +71,7 @@ sub do_style_dump {
 
 	# this could be smarter.  It also apperas in STAB.pm for
 	# the title bar
-	if ( $root !~ m,://stab.[^/]+/?$, && $root !~ /dev/ ) {
+	if ( $root !~ m,://stab.[^/]+/?$, && $root !~ /dev[^e]/ ) {
 		print <<END;
 
 BODY { 
@@ -484,10 +484,6 @@ img.subnet {
 	width: 1em;
 }
 
-table.intmoretable {
-	background: lightyellow;
-}
-
 .intableheader {
 	text-align: center;
 	font-weight: bold;
@@ -495,19 +491,43 @@ table.intmoretable {
 }
 
 table.interfacetable {
-	display: inline;
+	border-collapse: collapse;
 	margin: auto;
 	text-align: center;
-}
-
-table.interfacetable tr {
-	outline: 1px solid;
+	border: 1px solid;
 }
 
 table.interfacetable td {
 	vertical-align: top;
 	margin: auto;
 	text-align: center;
+	border-top: 1px solid;
+	border-bottom: 1px solid;
+}
+
+table.interfacednstable td {
+	border: none;
+}
+
+table.dnsrefroot {
+        width: 100%;
+}
+
+tr.dnsroot td {
+	text-align: left;
+}
+
+table.intmoretable {
+	background: lightyellow;
+	border-collapse: collapse;
+	border: none;
+	width: 100%;
+}
+
+table.intmoretable td {
+	border-collapse: collapse;
+	border: none;
+	text-align: left;
 }
 
 #verifybox li {
@@ -778,6 +798,28 @@ div.collectionexpandview {
 }
 div.collectionexpandview ul {
 	text-align: left;
+}
+
+.control_collapsed {
+	user-select: none;
+	cursor: pointer;
+	transform: scale(1.2,1.2);
+}
+
+.control_collapsed:hover {
+	transform: scale(1.4,1.4);
+	color: blue;
+}
+
+.control_expanded {
+	user-select: none;
+	cursor: pointer;
+	transform: scale(1.2,-1.2);
+}
+
+.control_expanded:hover {
+	transform: scale(1.4,-1,4);
+	color: blue;
 }
 
 END

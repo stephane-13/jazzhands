@@ -714,14 +714,27 @@ sub delete_old_netblock {
 
 	return undef unless ( defined($oldblock) );
 
-	my $q = qq{
-		delete	from netblock
-		 where	netblock_id = ?
-	};
-	my $sth = $stab->prepare($q) || die $stab->return_db_err;
-	$sth->execute( $oldblock->{ _dbx('NETBLOCK_ID') } )
-	  || die $stab->return_db_err($sth);
+	#my $q = qq{
+	#		delete	from netblock
+	#	 where	netblock_id = ?
+	#};
+	#my $sth = $stab->prepare($q) || die $stab->return_db_err;
+	#$sth->execute( $oldblock->{ _dbx('NETBLOCK_ID') } )
+	#  || die $stab->return_db_err($sth);
 
+	my @qs = (
+		qq{delete from network_interface_netblock
+			where netblock_id = ?
+		},
+		qq{delete from netblock
+			where netblock_id = ?
+		},
+	);
+	foreach my $q (@qs) {
+		my $sth = $stab->prepare($q) || $stab->return_db_err;
+		$sth->execute( $oldblock->{ _dbx('NETBLOCK_ID') } )
+		  || $stab->return_db_err( $sth );
+	}
 }
 
 sub configure_nb_if_ok {
@@ -793,8 +806,10 @@ sub get_network_interface {
 	my ( $stab, $id ) = @_;
 
 	my $q = qq{
-		select *
-		from	v_network_interface_trans
+		select network_interface.*,network_interface_netblock.netblock_id
+		from	network_interface
+		left join network_interface_netblock
+		using   (network_interface_id)
 		where	network_interface_id = ?
 	};
 	my $sth = $stab->prepare($q) || die $stab->return_db_err;
@@ -809,7 +824,7 @@ sub get_total_ifs {
 
 	my $q = qq{
 		select	count(*)
-		  from	v_network_interface_trans
+		  from	network_interface
 		 where	device_id = ?
 	};
 	my $sth = $stab->prepare($q) || die $stab->return_db_err;
@@ -828,7 +843,7 @@ sub number_interface_kids {
 	my $sth = $stab->prepare(
 		qq{
 		select	count(*)
-		 from	v_network_interface_trans
+		 from	network_interface
 		where	parent_network_interface_id = ?
 	}
 	) || $stab->return_db_err;
@@ -849,18 +864,20 @@ sub delete_interface {
 	}
 
 	my $nbq = qq{
-		select	ni.netblock_id,
+		select	nin.netblock_id,
 			ni.physical_port_id,
 			ni.device_id,
 			nb.description,
 			dns.dns_record_id,
 			dns.dns_name,
 			dom.soa_name
-		  from	v_network_interface_trans ni
+		  from	network_interface ni
+			inner join network_interface_netblock nin
+				using (network_interface_id)
 			inner join netblock nb on
-				ni.netblock_id = nb.netblock_id
+				nin.netblock_id = nb.netblock_id
 			left join dns_record dns on
-				dns.netblock_id = ni.netblock_id
+				dns.netblock_id = nin.netblock_id
 			left join dns_domain dom on
 				dom.dns_domain_id = dns.dns_domain_id
 		 where	ni.network_interface_id = ?
@@ -874,13 +891,19 @@ sub delete_interface {
 	$nbsth->finish;
 
 	if ($netintid) {
-		my $q = qq{
-			delete	from v_network_interface_trans
-			  where	network_interface_id = ?
-		};
-		my $sth = $stab->prepare($q) || $stab->return_db_err;
-		$sth->execute($netintid)
-		  || $stab->return_db_err( $sth, "netintid: $netintid" );
+		my @qs = (
+			qq{delete from network_interface_netblock
+				where network_interface_id = ?
+			},
+			qq{delete from network_interface
+				where network_interface_id = ?
+			},
+		);
+		foreach my $q (@qs) {
+			my $sth = $stab->prepare($q) || $stab->return_db_err;
+			$sth->execute($netintid)
+			  || $stab->return_db_err( $sth, "netintid: $netintid" );
+		}
 	}
 
 	if ( !$nblkid ) {
@@ -1714,7 +1737,7 @@ sub update_all_interfaces {
 	my $sth = $stab->prepare(
 		qq{
 		select	network_interface_id
-		 from	v_network_interface_trans
+		 from	network_interface
 		where	device_id = ?
 		order by network_interface_id
 	}
@@ -1799,9 +1822,18 @@ sub update_interface {
 		$stab->error_return("$ip is an invalid IP address");
 	}
 
+	if ( !defined($ip) && defined($dns)) {
+		$stab->error_return("You must set an IP address with a DNS name");
+	}
+
 	if ( $dns && !$dnsdomid ) {
 		$stab->error_return(
 			"You must specify a domain when adding a dns entry.");
+	}
+
+	# Check if a dns domain is given but no dns name
+	if ( !defined($dns) && defined($dnsdomid) ) {
+		$stab->error_return("You must set a DNS name with a DNS domain");
 	}
 
 	my $numchanges = 0;
@@ -1890,6 +1922,45 @@ sub update_interface {
 	#
 	# now go and update the netblock itself.
 	#
+	# Is the ip address changing from a non-empty value to a different non-empty value?
+	if ( $nblkid && $old_int->{ _dbx('NETBLOCK_ID') } && $old_int->{ _dbx('NETBLOCK_ID') } != $nblkid ) {
+		my $old_nb = {
+			NETWORK_INTERFACE_ID   => $old_int->{ _dbx('NETWORK_INTERFACE_ID') },
+			NETBLOCK_ID            => $old_int->{ _dbx('NETBLOCK_ID') },
+		};
+
+		my $new_nb = {
+			NETWORK_INTERFACE_ID   => $old_int->{ _dbx('NETWORK_INTERFACE_ID') },
+			NETBLOCK_ID            => $nblkid,
+		};
+
+		my $diffnb = $stab->hash_table_diff( $old_nb, $new_nb );
+		$numchanges += keys %$diffnb;
+		$stab->run_update_from_hash( 'network_interface_netblock',
+			'network_interface_id',
+			$old_int->{ _dbx('NETWORK_INTERFACE_ID') }, $diffnb );
+
+	# Is the ip address changing from an empty value to a non-empty value?
+	} elsif ( $nblkid && ! $old_int->{ _dbx('NETBLOCK_ID') } ) {
+		my $new = {
+			NETWORK_INTERFACE_ID   => $old_int->{ _dbx('NETWORK_INTERFACE_ID') },
+			NETBLOCK_ID            => $nblkid,
+		};
+		my @errs;
+		if (
+			!(
+				$numchanges += $stab->DBInsert(
+					table  => 'network_interface_netblock',
+					hash   => $new,
+					errors => \@errs
+				)
+			)
+		  )
+		{
+			$stab->error_return( join( " ", @errs ) );
+		}
+	}
+
 	my $new_int = {
 		NETWORK_INTERFACE_ID   => $old_int->{ _dbx('NETWORK_INTERFACE_ID') },
 		NETWORK_INTERFACE_NAME => $intname,
@@ -1897,7 +1968,7 @@ sub update_interface {
 		IS_INTERFACE_UP        => $isintup,
 		MAC_ADDR               => $procdmac,
 		SHOULD_MONITOR         => $shldmon,
-		NETBLOCK_ID            => $nblkid,
+		#NETBLOCK_ID            => $nblkid,
 		SHOULD_MANAGE          => $shldmng,
 		DESCRIPTION            => $desc,
 
@@ -1905,24 +1976,18 @@ sub update_interface {
 		#- PARENT_NETWORK_INTERFACE_ID => $newparent,
 	};
 
-	my (@notes);
-
 	my $diff = $stab->hash_table_diff( $old_int, _dbx($new_int) );
 	$numchanges += keys %$diff;
-	$stab->run_update_from_hash( 'v_network_interface_trans',
+	$stab->run_update_from_hash( 'network_interface',
 		'network_interface_id',
 		$old_int->{ _dbx('NETWORK_INTERFACE_ID') }, $diff );
 
 	#
 	# now delete the old netblock if required.
 	#
-	if ( defined($oldblock) && defined($nblk) ) {
-		if ( $oldblock->{ _dbx('NETBLOCK_ID') } !=
-			$nblk->{ _dbx('NETBLOCK_ID') } )
-		{
-			delete_old_netblock( $stab, $oldblock );
-			$numchanges++;
-		}
+	if ( defined($oldblock) && ( ! $ip || ( defined($nblk) && $oldblock->{ _dbx('NETBLOCK_ID') } != $nblk->{ _dbx('NETBLOCK_ID') } ) ) ) {
+		delete_old_netblock( $stab, $oldblock );
+		$numchanges++;
 	}
 
 	$numchanges +=
@@ -2269,10 +2334,15 @@ sub add_interfaces {
 		$stab->error_return("You must set an interface type");
 	}
 
-	if ( !defined($ip) ) {
-		$stab->error_return("You must set an IP address");
+	#if ( !defined($ip) ) {
+	#		$stab->error_return("You must set an IP address");
+	#}
+
+	if ( !defined($ip) && defined($dns)) {
+		$stab->error_return("You must set an IP address with a DNS name");
 	}
 
+	# Check if a dns name is given but no dns domain
 	if ( defined($dns) && !defined($dnsdomid) ) {
 
 		#
@@ -2284,13 +2354,21 @@ sub add_interfaces {
 		}
 	}
 
-	my $nblk = $stab->get_netblock_from_ip(
-		ip_address        => $ip,
-		is_single_address => 'Y',
-		netblock_type     => 'default'
-	);
-	my $xblk = $stab->configure_allocated_netblock( $ip, $nblk );
-	$nblk = $xblk;
+	# Check if a dns domain is given but no dns name
+	if ( !defined($dns) && defined($dnsdomid) ) {
+		$stab->error_return("You must set a DNS name with a DNS domain");
+	}
+
+	my $nblk;
+	if ( defined($ip) ) {
+		$nblk = $stab->get_netblock_from_ip(
+			ip_address        => $ip,
+			is_single_address => 'Y',
+			netblock_type     => 'default'
+		);
+		my $xblk = $stab->configure_allocated_netblock( $ip, $nblk );
+		$nblk = $xblk;
+	}
 
 	#
 	# figure out if other interfaces share these properties, and turn them
@@ -2336,33 +2414,17 @@ sub add_interfaces {
 		IS_INTERFACE_UP        => $isintup,
 		MAC_ADDR               => $macaddr,
 		physical_port_id       => $ppid,
-		netblock_id            => $nblk->{ _dbx('NETBLOCK_ID') },
 		should_manage          => $shldmng,
 		should_monitor         => $shldmon,
 	};
 
-	my $q = qq{
-		insert into v_network_interface_trans (
-			device_id, name, NETWORK_INTERFACE_TYPE,
-			IS_INTERFACE_UP, MAC_ADDR,
-			NETWORK_INTERFACE_PURPOSE, IS_PRIMARY, SHOULD_MONITOR,
-			physical_port_id, 
-			NETBLOCK_ID, SHOULD_MANAGE, IS_MANAGEMENT_INTERFACE
-		) values (
-			:devid, :name, :nitype,
-			:isup, :mac,
-			:nipurpose, :isprimary, :shldmon,
-			:phsportid,
-			:nblkid, :shldmng, :ismgmtip
-		) returning network_interface_Id into :rv
-	};
-
 	my $numchanges = 0;
 	my @errs;
+
 	if (
 		!(
 			$numchanges += $stab->DBInsert(
-				table  => 'v_network_interface_trans',
+				table  => 'network_interface',
 				hash   => $new,
 				errors => \@errs
 			)
@@ -2373,6 +2435,27 @@ sub add_interfaces {
 	}
 
 	$netintid = $new->{ _dbx('NETWORK_INTERFACE_ID') };
+
+        if( defined($ip) ) {
+		my $new2 = {
+			network_interface_id => $netintid,
+			netblock_id          => $nblk->{ _dbx('NETBLOCK_ID') },
+			device_id            => $devid
+		};
+
+		if (
+			!(
+				$numchanges += $stab->DBInsert(
+					table  => 'network_interface_netblock',
+					hash   => $new2,
+					errors => \@errs
+				)
+			)
+		  )
+		{
+			$stab->error_return( join( " ", @errs ) );
+		}
+	}
 
 	if ( defined($dns) && defined($dnsdomid) ) {
 		my $type = 'A';
@@ -2403,7 +2486,7 @@ sub switch_all_ni_prop_to_n {
 	if ($field) {
 		my $q = qq{
 			select	count(*)
-			  from	v_network_interface_trans
+			  from	network_interface
 			 where	device_id = ?
 			  and	$field = 'Y'
 		};
@@ -2414,7 +2497,7 @@ sub switch_all_ni_prop_to_n {
 
 	if ($old_count) {
 		my $q = qq{
-			update v_network_interface_trans
+			update network_interface
 			  set  $field = 'N'
 			where  device_id = ?
 		};
@@ -2509,7 +2592,7 @@ sub delete_device_interfaces {
 
 	my (@netblocks);
 	my $nbq = qq{
-		select	netblock_id from v_network_interface_trans
+		select	netblock_id from network_interface_netblock
 					where device_id = ?
 	};
 	my $Nsth = $stab->prepare($nbq) || $stab->return_db_err;
@@ -2522,14 +2605,17 @@ sub delete_device_interfaces {
 	my @qs = (
 		qq{delete from dns_record
 			where netblock_id in
-					(select netblock_id from v_network_interface_trans
+					(select netblock_id from network_interface_netblock
 						where device_id = ?
 					)
 		},
 		qq{delete from network_interface_purpose
 					where device_id = ?
 		},
-		qq{delete from v_network_interface_trans
+		qq{delete from network_interface_netblock
+					where device_id = ?
+		},
+		qq{delete from network_interface
 					where device_id = ?
 		},
 	);
