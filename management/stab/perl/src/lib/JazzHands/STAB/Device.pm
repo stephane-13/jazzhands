@@ -1653,31 +1653,34 @@ sub get_device_netblock_routes {
 sub dump_interfaces {
 	my ( $self, $devid ) = @_;
 
+	open( TMPF, '>', '/tmp/test' );
+	use Data::Dumper;
+
 	my $dbh = $self->dbh || die "Could not create dbh";
 	my $cgi = $self->cgi || die "Could not create cgi";
 
-	my $img;
+	#my $img;
 
-	my $collapse = $cgi->param('collapse') || 'no';
-	if ( $collapse eq 'yes' ) {
-		my $n = new CGI($cgi);
-		$n->param( 'collapse', 'no' );
-		$img = $cgi->a( { -href => $n->self_url },
-			$cgi->img( { -src => "../stabcons/collapse.jpg" } ) );
-	} else {
-		my $n = new CGI($cgi);
-		$n->param( 'collapse', 'yes' );
-		$img = $cgi->a( { -href => $n->self_url },
-			$cgi->img( { -src => "../stabcons/expand.jpg" } ) );
-	}
+	#my $collapse = $cgi->param('collapse') || 'no';
+	#if ( $collapse eq 'yes' ) {
+	#	my $n = new CGI($cgi);
+	#	$n->param( 'collapse', 'no' );
+	#	$img = $cgi->a( { -href => $n->self_url },
+	#		$cgi->img( { -src => "../stabcons/collapse.jpg" } ) );
+	#} else {
+	#	my $n = new CGI($cgi);
+	#	$n->param( 'collapse', 'yes' );
+	#	$img = $cgi->a( { -href => $n->self_url },
+	#		$cgi->img( { -src => "../stabcons/expand.jpg" } ) );
+	#}
 
-	$collapse = 'yes';    # [XXX] need to figure out how to do the
-	$img      = '';       # [XXX] collapsing better w/ the tabs!
+	#$collapse = 'yes';    # [XXX] need to figure out how to do the
+	#$img      = '';       # [XXX] collapsing better w/ the tabs!
 
 	my $rv =
-	  $cgi->h3( { -align => 'center' }, $img, "Layer 3 Interfaces", $img );
+	  #$cgi->h3( { -align => 'center' }, $img, "Layer 3 Interfaces", $img );
+	  $cgi->h3( { -align => 'center' }, "Layer 3 Interfaces" );
 
-	my $lastid;
 	my $q = qq{
 		select	ni.network_interface_id,
 			ni.network_interface_name,
@@ -1687,6 +1690,7 @@ sub dump_interfaces {
 			ni.should_manage,
 			ni.should_monitor,
 			ni.description,
+			nb.netblock_id,
 			net_manip.inet_dbtop(nb.ip_address) as IP,
 			dns.dns_record_id,
 			dns.dns_name,
@@ -1703,77 +1707,118 @@ sub dump_interfaces {
 			left join netblock pnb on
 				nb.parent_netblock_id = pnb.netblock_id
 		where ni.device_id = ?
-		order by ni.network_interface_name, ni.network_interface_id,
+		order by ni.network_interface_name, ni.network_interface_id, IP,
 			dns.should_generate_ptr desc
 	};
 
 	my $sth = $self->prepare($q) || $self->return_db_err($dbh);
 	$sth->execute($devid) || $self->return_db_err($sth);
 
-	# Process each record and aggregate dns records for more efficient display
+	# Process each record and aggregate ip addresses and dns record
 
-	my @all_processed_values;
-	my %processed_values;
-	my $last_interface_values;
+	my @aInterfaces;		# Array to store interfaces as hashes
+	my %hInterface;			# Interface hash
+	my %hIpAddress;			# IP address hash
+
+	my $last_interface_id = -1;	# Id of the interface processed in the last loop iteration
+	my $last_ip_address = 'xxx';	# Value of the ip address processed in the last loop iteration
+	my %dns;			# DNS info hash
+	my $first = 1;
 
 	while ( my ($values) = $sth->fetchrow_hashref ) {
+print TMPF "----------------------------------\n";
 		last if ( !defined($values) );
-
+print TMPF Dumper(\$values);
 		# Build a hash of the dns properties
-		my %dns = (
-			'dns_record_id'		=> $values->{ 'dns_record_id' },
-			'dns_name'		=> $values->{ 'dns_name' },
-			'dns_domain_id'		=> $values->{ 'dns_domain_id' },
-			'soa_name'		=> $values->{ 'soa_name'},
-			'should_generate_ptr'	=> $values->{ 'should_generate_ptr'},
-		);
+		if( $values->{ 'dns_record_id' } ) {
+			%dns = (
+				'dns_record_id'		=> $values->{ 'dns_record_id' },
+				'dns_name'		=> $values->{ 'dns_name' },
+				'dns_domain_id'		=> $values->{ 'dns_domain_id' },
+				'soa_name'		=> $values->{ 'soa_name'},
+				'should_generate_ptr'	=> $values->{ 'should_generate_ptr'},
+			);
+		} else {
+			%dns = ();
+		}
+
+print TMPF 'last ip:'.$last_ip_address."\n";
+print TMPF 'new ip :'.$values->{ _dbx('IP') }."\n";
 
 		# If it's the first interface, just populate it from the record
-		if ( ! $lastid ) {
+		if ( $first == 1 ) {
+			$first = 0;
 			foreach ( keys ( %{$values} ) ) {
-				$processed_values{ $_ } = $values->{ $_ };
+				$hInterface{ $_ } = $values->{ $_ };
 			}
-		}
-		# If the interface has changed, save it for later processing
-		if ( $lastid && $lastid != $values->{ _dbx('NETWORK_INTERFACE_ID') } ) {
-			my %tvalues = %processed_values;
-			push( @all_processed_values, \%tvalues );
-			# Empty and populate the current interface with the new record data
-			%processed_values = ();
-			foreach ( keys ( %{$values} ) ) {
-				$processed_values{ $_ } = $values->{ $_ };
+			# If we have an ip address (it can be null), remember it
+			if( $values->{ _dbx('IP') } ) {
+				$hIpAddress{ 'network_interface_id' } = $values->{ _dbx('network_interface_id') };
+				$hIpAddress{ 'netblock_id' } = $values->{ _dbx('netblock_id') };
+				$hIpAddress{ 'ip' } = $values->{ _dbx('IP') };
+			}
+
+		# This is not the first iteration
+		} else {
+
+			# If the interface has changed or if the ip address has changed
+			if ( ( $last_interface_id != $values->{ _dbx('NETWORK_INTERFACE_ID') } ) or
+			     ( $last_ip_address ne $values->{ _dbx('IP') } ) ) {
+print TMPF "IF or IP changed - dumping ip\n";
+print TMPF Dumper( \%hIpAddress );
+				push( @{$hInterface{'ip_addresses'}}, {%hIpAddress} );
+				# Empty and populate the current ip address with the new record data
+				%hIpAddress = ();
+				$hIpAddress{ 'network_interface_id' } = $values->{ _dbx('network_interface_id') };
+				$hIpAddress{ 'netblock_id' } = $values->{ _dbx('netblock_id') };
+				$hIpAddress{ 'ip' } = $values->{ _dbx('IP') };
+			}
+
+			# If the interface has changed, save it for later processing
+			if ( $last_interface_id != $values->{ _dbx('NETWORK_INTERFACE_ID') } ) {
+print TMPF "IF changed - dumping interface\n";
+print TMPF Dumper( \%hInterface );
+				push( @aInterfaces, {%hInterface} );
+				# Empty and populate the current interface with the new record data
+				%hInterface = ();
+				foreach ( keys ( %{$values} ) ) {
+					$hInterface{ $_ } = $values->{ $_ };
+				}
 			}
 		}
 
-		# Add the dns record hash to the current interface
-		if ( $dns{ 'dns_record_id' } ) {
-			push( @{$processed_values{ 'dns_records' }} , \%dns );
+		# Add the dns record hash to the current ip
+		if ( $values->{ 'dns_record_id' } ) {
+			push( @{$hIpAddress{ 'dns_records' }} , {%dns} );
+print TMPF "dns added - dumping ip\n";
+print TMPF Dumper( \%hIpAddress );
 		}
 
-		$lastid = $values->{ _dbx('NETWORK_INTERFACE_ID') };
+		$last_interface_id = $values->{ _dbx('NETWORK_INTERFACE_ID') };
+		$last_ip_address = $values->{ _dbx('IP') };
 	}
-	# Save the last interface for later processing
-	my %tvalues = %processed_values;
-	push( @all_processed_values, \%tvalues );
 
-	# Reset the lastid value for the next loop
-	$lastid = '';
+	# Save the last interface
+	push( @{$hInterface{'ip_addresses'}}, {%hIpAddress} );
+	push( @aInterfaces, {%hInterface} );
+
+	#foreach my $i (@aInterfaces) {
+	#	print TMPF Dumper($i);
+	#}
+
+print TMPF Dumper( \@aInterfaces );
 
 	# Loop on preprocessed interfaces
-	#while ( my ($values) = $sth->fetchrow_hashref ) {
-	foreach my $values ( @all_processed_values ) {
-		#last if ( !defined($values) );
-
-		if ( $collapse eq 'yes' ) {
-			$rv .= $self->build_collapsed_if_box( $values, $devid );
-		} else {
-			$rv .= $self->build_interface_box( $values, $devid );
-		}
-		$lastid = $values->{ _dbx('NETWORK_INTERFACE_ID') };
+	foreach my $hrInterface ( @aInterfaces ) {
+		#if ( $collapse eq 'yes' ) {
+			$rv .= $self->build_collapsed_if_box( $hrInterface, $devid );
+		#} else {
+		#	$rv .= $self->build_interface_box( $hrInterface, $devid );
+		#}
 	}
 
-	if ( $collapse eq 'yes' ) {
-		my $collist = [ 'Del', 'Name', 'IP', 'Mac', 'DNS', 'Type', 'More' ];
+	#if ( $collapse eq 'yes' ) {
+		my $collist = [ '', 'Name', 'Mac', 'Type', 'IP', 'DNS', 'More' ];
 		$rv = $cgi->table(
 			{ -class => 'interfacetable' },
 			$cgi->th($collist),
@@ -1784,9 +1829,11 @@ sub dump_interfaces {
 			),
 			$self->build_collapsed_if_box( undef, $devid )
 		);
-	} else {
-		$rv .= $self->build_interface_box( undef, $devid );
-	}
+	#} else {
+	#	$rv .= $self->build_interface_box( undef, $devid );
+	#}
+
+	close( TMPF );
 
 	$sth->finish;
 	$rv .= "\n";
@@ -1846,18 +1893,14 @@ sub build_network_interface_purpose_table($$) {
 sub build_collapsed_if_box {
 	my ( $self, $values, $devid ) = @_;
 
-	my $dbh = $self->dbh || die "Could not create dbh";
+	#my $dbh = $self->dbh || die "Could not create dbh";
 	my $cgi = $self->cgi || die "Could not create cgi";
 
 	my $netintid = '';
-
 	my $defchecked = undef;
-
 	my $action_url    = "write/update_interface.pl";
 	my $hidden        = "";
-
 	my $rowitems = {};
-
 	my $delbox = "";
 
 	if ( !defined($values) ) {
@@ -1878,11 +1921,30 @@ sub build_collapsed_if_box {
 			  . $netintid,
 			-default => $netintid
 		);
-		$delbox = $self->build_checkbox( $values, "",
-			"rm_NETWORK_INTERFACE", 'NETWORK_INTERFACE_ID' );
-	}
+		#$delbox = $self->build_checkbox( $values, "",
+		#	"rm_NETWORK_INTERFACE", 'NETWORK_INTERFACE_ID' );
 
-	# $self->textfield_sizing(undef);
+		$delbox = $cgi->checkbox(
+			{
+				-class => 'irrelevant rmrow',
+				-name  => 'chk_RM_NETWORK_INTERFACE_'.$netintid,
+				-label => '',
+				-alt   => "Delete this Record",
+				-title => 'Delete This Record',
+			}
+		)
+		.$cgi->a(
+			{ -class => 'rmrow' },
+			$cgi->img(
+				{
+				-src   => "../stabcons/redx.jpg",
+				-alt   => "Delete this Network Interface",
+				-title => 'Delete This Network Interface',
+				-class => 'rmdnsrow button',
+				}
+			)
+		);
+	}
 
 	my $pk      = "NETWORK_INTERFACE_ID";
 	my $intname = $self->b_textfield( { -textfield_width => 10 },
@@ -1893,17 +1955,146 @@ sub build_collapsed_if_box {
 		$pk = \@pk;
 	}
 
-	my $dns = '';
+	my $netintpurp =
+	  $self->build_network_interface_purpose_table( $values, $devid );
+
+	my $more_do_not_free_checkbox = '';
+
+	# Build a table for Extras
+	if ( length($delbox) ) {
+		$more_do_not_free_checkbox = $cgi->td(
+			{
+				-class => 'intmoretd',
+			},
+			$self->build_checkbox(
+				$values,                  "Do Not Free IPs on Removal",
+				'rm_NET_INT_preserveips', 'NETWORK_INTERFACE_ID'
+			)
+		);
+	}
+
+	my $more_table = $cgi->table(
+		{ -class => "intmoretable" },
+		$self->build_tr(
+			{},            $values,
+			"b_textfield", "Description",
+			'DESCRIPTION', 'NETWORK_INTERFACE_ID'
+		)
+		. $cgi->Tr(
+			{ -class => 'intmoretr' },
+			$cgi->td(
+				{
+					-rowspan => 4,
+				},
+				$cgi->b("Select Purpose:").$cgi->br(), $netintpurp )
+			. $cgi->td(
+				{
+					-class => 'intmoretd',
+				},
+				$self->build_checkbox(
+					$values,           "Up",
+					'IS_INTERFACE_UP', 'NETWORK_INTERFACE_ID',
+					$defchecked
+				)
+			)
+		)
+		. $cgi->Tr(
+			{ -class => 'intmoretr' },
+			$cgi->td(
+				{
+					-class => 'intmoretd',
+				},
+				$self->build_checkbox(
+					$values,         "Should Manage",
+					'SHOULD_MANAGE', 'NETWORK_INTERFACE_ID',
+					$defchecked
+				)
+			)
+		)
+		. $cgi->Tr(
+			{ -class => 'intmoretr' },
+			$cgi->td(
+				{
+					-class => 'intmoretd',
+				},
+				$self->build_checkbox(
+					$values,          "Should Monitor",
+					'SHOULD_MONITOR', 'NETWORK_INTERFACE_ID',
+					$defchecked
+				)
+			)
+		)
+		. $cgi->Tr(
+			{ -class => 'intmoretr' },
+			$more_do_not_free_checkbox
+		),
+	);
+
+	# Make the extras something that can be clicked on and expanded
+	my $more_td = $cgi->td( { -class => 'more_expand_td_'.$netintid }, '<div id="more_expand_control_'.$netintid.'" onclick="showhide( this );" class="control_collapsed">&#9650;</div>' );
+
+	my $add_ip = $cgi->span(
+		{
+			-alt   => 'Add IP address',
+			-title => 'Add IP address',
+			-class => 'addipaddr plusbutton'
+		}, '&#10010;'
+	);
+
+	my $rv = $cgi->Tr(
+		$rowitems,
+		$cgi->td( $hidden, $delbox ),
+		$cgi->td( $intname ),
+		$cgi->td( $self->b_dropdown( $values, 'NETWORK_INTERFACE_TYPE', $pk ) ),
+		$cgi->td( $self->b_textfield( $values, "MAC_ADDR", $pk ) ),
+		$cgi->td( { -colspan => 2 }, $add_ip ),
+		$more_td,
+	).$cgi->Tr(
+		$cgi->td( { -id => 'more_expand_content_'.$netintid, -class => 'irrelevant', -colspan => 7 }, $more_table )
+	);
+
+	# $self->textfield_sizing(1);
+	$rv.$self->build_ip_box( $values->{'ip_addresses'}, $devid, $netintid );
+}
+
+# This procedure builds what's needed to display the ip part of an interface row
+sub build_ip_box {
+	my ( $self, $ip_addresses, $devid, $netintid ) = @_;
+
+	my $cgi = $self->cgi || die "Could not create cgi";
+
+	my $ipbox;
+
+	# Loop on ip addresses
+	foreach my $ip_address ( @{$ip_addresses} ) {
+		$ipbox .= $cgi->Tr(
+			$cgi->td( { -colspan => 4 } ),
+			$cgi->td( $self->b_textfield( $ip_address, 'ip', [ 'network_interface_id', 'netblock_id' ] ) ),
+			$cgi->td( $self->build_dns_box( $ip_address->{'dns_records'}, $devid, $netintid ) ),
+			$cgi->td( { -colspan => 1 } )
+		);
+	}
+
+	$ipbox;
+}
+
+# This procedure builds what's needed to display the dns part of an ip address row
+sub build_dns_box {
+	my ( $self, $dns_records, $devid, $netintid ) = @_;
+
+	my $cgi = $self->cgi || die "Could not create cgi";
+
+	my $dnsbox = '';
 	my $dnsline = '';
 	my $dnsid = 'new';
 
 	# If there is a DNS record - or more - associated to this interface ip
 	# Display it in non editable mode for security
 	#
-	if ( $values && $values->{ 'dns_records' } && scalar @{$values->{ 'dns_records' }} > 0 ) {
+	if ( $dns_records && scalar @{$dns_records} > 0 ) {
 
 		# Loop on dns records
-		foreach my $dns_record ( @{$values->{ 'dns_records' }} ) {
+		foreach my $dns_record ( @{$dns_records} ) {
 
 			$dnsid = $dns_record->{ 'dns_record_id' };
 
@@ -1998,6 +2189,8 @@ sub build_collapsed_if_box {
 					-class => 'irrelevant rmrow',
 					-name  => "Del_" . $dns_record->{ 'dns_record_id' },
 					-label => '',
+					-alt   => "Delete this Record",
+					-title => 'Delete This Record',
 				}
 			)
 			.$cgi->a(
@@ -2043,12 +2236,12 @@ sub build_collapsed_if_box {
 			);
 
 			# Add this dns line to the dns field
-			$dns .= $cgi->Tr( $dnsline ).$dns_tr_refrecords;
+			$dnsbox .= $cgi->Tr( $dnsline ).$dns_tr_refrecords;
 
 		} # end of loop on dns records
 
 		# wrap all DNS lines in a table
-		$dns =	$cgi->table(
+		$dnsbox =	$cgi->table(
 			{
 			        -width		=> '100%',
 				-border		=> 0,
@@ -2056,94 +2249,12 @@ sub build_collapsed_if_box {
 				-cellpadding	=> 0,
 				-class		=> 'interfacednstable'
 			},
-			$dns
+			$dnsbox
 		);
-
-	# XXX: unused code - to be removed
-	} elsif ( 0 && $values && $values->{ _dbx('DNS_RECORD_ID') } ) {
-
-		# Note that this code echos bits in dns-common.js for setting up
-		# things in the dns ref table, and this also makes for generic
-		# expansion of dns records.  This should probably move out into
-		# STAB.pm.   XXX
-		$dnsid = $values->{ _dbx('DNS_RECORD_ID') };
-
-		my $netintid = $values->{ _dbx('NETWORK_INTERFACE_ID') };
-
-		my $dot = "";
-		if ( $values->{ _dbx('DNS_NAME') } ) {
-			$dot = ".";
-		}
-
-		$dns = $cgi->span(
-			{ -class => 'dnsroot' },
-			$cgi->textfield(
-				{
-					-type     => 'text',
-					-class    => 'irrelevant dnsname',
-					-name     => 'DNS_NAME_' . $netintid,
-					-value    => $values->{ _dbx('DNS_NAME') },
-					-disabled => 1,
-				}
-			  )
-			  . $cgi->popup_menu(
-				{
-					-name  => 'DNS_DOMAIN_ID_' . $netintid,
-					-class => 'irrelevant dnsdomain',
-				}
-			  )
-			  . $cgi->hidden(
-				{
-					-class    => 'dnsdomainid',
-					-name     => '',
-					-value    => $values->{ _dbx('DNS_DOMAIN_ID') },
-					-disabled => 1
-				}
-			  )
-			  . $cgi->a(
-				{
-					-class  => 'intdnsedit',
-					-target => "dns_record_id"
-					  . $values->{ _dbx('DNS_RECORD_ID') },
-					-href => '../dns/?DNS_RECORD_ID='
-					  . $values->{ _dbx('DNS_RECORD_ID') },
-				},
-				$values->{ _dbx('DNS_NAME') }
-				  . $dot
-				  . $values->{ _dbx('SOA_NAME') },
-			  )
-			  . $cgi->img(
-				{
-					-src   => "../stabcons/e.png",
-					-alt   => "Edit",
-					-title => 'Edit',
-					-class => 'intdnsedit',
-				}
-			  )
-		  )
-		  . $cgi->a(
-			{ -class => 'dnsref', -href => 'javascript:void(null)' },
-			$cgi->img(
-				{
-					-src   => "../stabcons/arrow.png",
-					-alt   => "DNS Names",
-					-title => 'DNS Names',
-					-class => 'devdnsref',
-				}
-			  )
-			  . $cgi->hidden(
-				{
-					-class    => 'dnsrecordid',
-					-name     => '',
-					-value    => $values->{ _dbx('DNS_RECORD_ID') },
-					-disabled => 1
-				}
-			  )
-		  );
 
 	# There is no DNS record associated to this interface ip, display input fields
 	} else {
-		$dns =	$cgi->table(
+		$dnsbox =	$cgi->table(
 			{
 				-border		=> 0,
 				-cellspacing	=> 0,
@@ -2153,106 +2264,13 @@ sub build_collapsed_if_box {
 			$cgi->Tr(
 				$cgi->td(
 					$self->b_textfield( { -textfield_width => 20 },
-						$values, "DNS_NAME", $pk )
-					. $self->b_dropdown( $values, "DNS_DOMAIN_ID", $pk )
+						$dns_records, "DNS_NAME", 'NEWORK_INTERFACE_ID' )
+					. $self->b_dropdown( $dns_records, "DNS_DOMAIN_ID", 'NETWORK_INTERFACE_ID' )
 				)
 			)
 		);
 	}
-
-	my $netintpurp =
-	  $self->build_network_interface_purpose_table( $values, $devid );
-
-	my $more_do_not_free_checkbox = '';
-
-	# Build a table for Extras
-	if ( length($delbox) ) {
-		$more_do_not_free_checkbox = $cgi->td(
-			{
-				-class => 'intmoretd',
-			},
-			$self->build_checkbox(
-				$values,                  "Do Not Free IPs on Removal",
-				'rm_NET_INT_preserveips', 'NETWORK_INTERFACE_ID'
-			)
-		);
-	}
-
-	my $more_table = $cgi->table(
-		{ -class => "intmoretable" },
-		$self->build_tr(
-			{},            $values,
-			"b_textfield", "Description",
-			'DESCRIPTION', 'NETWORK_INTERFACE_ID'
-		)
-		. $cgi->Tr(
-			{ -class => 'intmoretr' },
-			$cgi->td(
-				{
-					-rowspan => 4,
-				},
-				$cgi->b("Select Purpose:").$cgi->br(), $netintpurp )
-			. $cgi->td(
-				{
-					-class => 'intmoretd',
-				},
-				$self->build_checkbox(
-					$values,           "Up",
-					'IS_INTERFACE_UP', 'NETWORK_INTERFACE_ID',
-					$defchecked
-				)
-			)
-		)
-		. $cgi->Tr(
-			{ -class => 'intmoretr' },
-			$cgi->td(
-				{
-					-class => 'intmoretd',
-				},
-				$self->build_checkbox(
-					$values,         "Should Manage",
-					'SHOULD_MANAGE', 'NETWORK_INTERFACE_ID',
-					$defchecked
-				)
-			)
-		)
-		. $cgi->Tr(
-			{ -class => 'intmoretr' },
-			$cgi->td(
-				{
-					-class => 'intmoretd',
-				},
-				$self->build_checkbox(
-					$values,          "Should Monitor",
-					'SHOULD_MONITOR', 'NETWORK_INTERFACE_ID',
-					$defchecked
-				)
-			)
-		)
-		. $cgi->Tr(
-			{ -class => 'intmoretr' },
-			$more_do_not_free_checkbox
-		),
-	);
-
-	# Make the extras something that can be clicked on and expanded
-	my $more_td = $cgi->td( { -style => "vertical-align:bottom", -class => 'more_expand_td_'.$netintid }, '<div id="more_expand_control_'.$netintid.'" onclick="showhide( this );" class="control_collapsed">&#9650;</div>' );
-
-	my $rv = $cgi->Tr(
-		$rowitems,
-		$cgi->td( $hidden, $delbox ),
-		$cgi->td($intname),
-		$cgi->td( $self->b_textfield( $values, "IP",       $pk ) ),
-		$cgi->td( $self->b_textfield( $values, "MAC_ADDR", $pk ) ),
-		$cgi->td( $dns ),
-		$cgi->td( $self->b_dropdown( $values, 'NETWORK_INTERFACE_TYPE', $pk ) ),
-		$more_td,
-	).$cgi->Tr(
-		$cgi->td( { -id => 'more_expand_content_'.$netintid, -class => 'irrelevant', -colspan => 7 }, $more_table )
-	);
-
-	# $self->textfield_sizing(1);
-	$rv;
+	$dnsbox;
 }
 
 sub build_interface_box {

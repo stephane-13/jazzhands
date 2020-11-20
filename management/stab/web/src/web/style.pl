@@ -498,7 +498,7 @@ table.interfacetable {
 }
 
 table.interfacetable td {
-	vertical-align: top;
+	vertical-align: middle;
 	margin: auto;
 	text-align: center;
 	border-top: 1px solid;
@@ -597,11 +597,22 @@ table.attest tbody tr.odd td {
 	background-color: lightgrey;
 }
 
-img.plusbutton {
-	height: 2ex;
+.plusbutton {
+	height: 1.2em;
+	width: 1.2em;
+	font-size: 1.0em;
 	border: 1px solid;
-	display: block;
-	text-align:center;
+	cursor: pointer;
+	user-select: none;
+	float: left;
+	display: flex;
+	align-items: center;
+	justify-content: center;
+}
+
+.plusbutton:hover {
+	transform: scale(1.2,1.2);
+	color: blue;
 }
 
 img.button {
@@ -801,24 +812,37 @@ div.collectionexpandview ul {
 }
 
 .control_collapsed {
+	height: 1.2em;
+	width: 1.2em;
+	font-size: 1.0em;
+	border: 1px solid;
 	user-select: none;
 	cursor: pointer;
-	transform: scale(1.2,1.2);
+	display: flex;
+	align-items: center;
+	justify-content: center;
 }
 
 .control_collapsed:hover {
-	transform: scale(1.4,1.4);
+	transform: scale(1.2,1.2);
 	color: blue;
 }
 
 .control_expanded {
+	height: 1.2em;
+	width: 1.2em;
+	font-size: 1.0em;
+	border: 1px solid;
 	user-select: none;
 	cursor: pointer;
-	transform: scale(1.2,-1.2);
+	transform: scale(1.0,-1.0);
+	display: flex;
+	align-items: center;
+	justify-content: center;
 }
 
 .control_expanded:hover {
-	transform: scale(1.4,-1,4);
+	transform: scale(1.2,-1,2);
 	color: blue;
 }
 
