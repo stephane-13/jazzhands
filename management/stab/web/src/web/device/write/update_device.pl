@@ -66,6 +66,8 @@ use Data::Dumper;
 use URI;
 use Carp qw(cluck);
 
+our $TMPF;
+
 return do_update_device();
 
 ###########################################################################
@@ -195,6 +197,13 @@ sub do_update_device {
 	my $stab = new JazzHands::STAB || die "Could not create STAB";
 	my $cgi  = $stab->cgi          || die "Could not create cgi";
 
+	use IO::Handle;
+	open( $TMPF, '>', '/tmp/test_update' );
+	$TMPF->autoflush;
+
+	print $TMPF Dumper( %{$stab->cgi}{'param'} );
+	print $TMPF "In do_update_device\n";
+
 	my $devid     = $stab->cgi_get_ids('DEVICE_ID');
 	my $devtypeid = $stab->cgi_parse_param( 'DEVICE_TYPE_ID', $devid );
 	my $serialno  = $stab->cgi_parse_param( 'SERIAL_NUMBER', $devid );
@@ -216,7 +225,7 @@ sub do_update_device {
 	my $appgtab  = $stab->cgi_parse_param( 'has_appgroup_tab', $devid );
 	my @appgroup = $stab->cgi_parse_param( 'appgroup', $devid );
 
-	#- print $cgi->header, $cgi->html($cgi->Dump()); exit;
+	#-print $cgi->header, $cgi->html($cgi->Dump()); exit;
 	# print $cgi->header, $cgi->start_html,
 	# my @x = $cgi->param('appgroup_'.$devid);
 	# print $cgi->p("appgroup is ", $cgi->ul(@appgroup), "totally");
@@ -267,6 +276,7 @@ sub do_update_device {
 	# get the current data and submit the difference if there are changes.
 	#
 	my $dbdevice = $stab->get_dev_from_devid($devid);
+	print $TMPF Dumper( $dbdevice );
 	if ( !$dbdevice ) {
 		$stab->error_return("Unknown Device");
 	}
@@ -324,11 +334,17 @@ sub do_update_device {
 	# everything about the device is pulled in, so now go and update the
 	# actual device.
 
+	print $TMPF "Just before update_location\n";
 	$numchanges += update_location( $stab, $devid );
+	print $TMPF "Just before update_all_interfaces\n";
+	print $TMPF "1-Number of changes so far: $numchanges.\n";
 
 	$numchanges += update_all_interfaces( $stab, $devid );
+	print $TMPF "2-Number of changes so far: $numchanges.\n";
 	$numchanges += update_all_dns_value_references( $stab, $devid );
+	print $TMPF "3-Number of changes so far: $numchanges.\n";
 	$numchanges += add_device_note( $stab, $devid );
+	print $TMPF "4-Number of changes so far: $numchanges.\n";
 
 	if ( $serial_reset && $retire_device ) {
 		$stab->error_return(
@@ -348,15 +364,19 @@ sub do_update_device {
 	$numchanges += update_physical_ports( $stab, $devid, $serial_reset );
 	$numchanges += update_power_ports( $stab, $devid );
 
+	print $TMPF "Just before add_interfaces\n";
 	$numchanges += add_interfaces( $stab, $devid );
+	print $TMPF "5-Number of changes so far: $numchanges.\n";
 
 	# Not there today..
 	#- $numchanges += process_licenses($stab, $devid);
 
 	$numchanges += process_interfaces( $stab, $devid );
+	print $TMPF "6-Number of changes so far: $numchanges.\n";
 
 	my $assetid = $dbdevice->{ _dbx('ASSET_ID') };
-	if ($assetid) {
+	# Does the asset exist?
+	if( $assetid ) {
 		my $dbasset =
 		  $stab->get_asset_from_component_id(
 			$dbdevice->{ _dbx('COMPONENT_ID') } );
@@ -390,6 +410,7 @@ sub do_update_device {
 		my $diffs = $stab->hash_table_diff( $dbasset, _dbx($newasset) );
 		my $tally   += keys %$diffs;
 		$numchanges += $tally;
+		print $TMPF "7a-Number of changes so far: $numchanges.\n";
 
 		if (
 			$tally
@@ -403,8 +424,8 @@ sub do_update_device {
 			return $stab->return_db_err;
 		}
 
-		# If the asset doesn't exist, let's create it
-	} else {
+	# If the asset doesn't exist and if we have a component_id for the device, let's create the missing asset
+	} elsif( defined( $dbdevice->{ _dbx('COMPONENT_ID') } ) )  {
 		my @errs;
 		my $newasset = {
 			COMPONENT_ID          => $dbdevice->{ _dbx('COMPONENT_ID') },
@@ -427,8 +448,11 @@ sub do_update_device {
 		{
 			$stab->error_return( join( " ", @errs ) );
 		}
+		print $TMPF "7b-Number of changes so far: $numchanges.\n";
 		my $assetid = $newasset->{ _dbx('ASSET_ID') };
 	}
+
+	print $TMPF "8-Number of changes so far: $numchanges.\n";
 
 	my $newdevice = {
 		DEVICE_ID      => $devid,
@@ -464,6 +488,8 @@ sub do_update_device {
 	my $tally   += keys %$diffs;
 	$numchanges += $tally;
 
+	print $TMPF "9-Number of changes so far: $numchanges.\n";
+
 	if ($resyncpower) {
 		$numchanges += $stab->resync_device_power( _dbx($newdevice) );
 	}
@@ -479,7 +505,7 @@ sub do_update_device {
 	}
 
 	if ( $numchanges == 0 ) {
-		$stab->msg_return("Nothing changed.  No updates submitted.");
+		$stab->msg_return( "Nothing changed. No updates submitted.");
 		exit;
 	}
 	if ( $tally
@@ -500,6 +526,9 @@ sub do_update_device {
 	}
 	$stab->msg_return( "Update successful.", $url, 1 );
 	undef $stab;
+
+	close( $TMPF );
+
 	1;
 }
 
@@ -627,7 +656,14 @@ sub update_location {
 	my $locid = $stab->cgi_get_ids('RACK_LOCATION_ID');
 
 	my $numchanges = 0;
-	my $rackid     = $stab->cgi_parse_param( 'LOCATION_RACK_ID', $locid );
+	# Attempt to read the location from the original rack dropdown, which as the location id in its name
+	my $rackid = $stab->cgi_parse_param( 'LOCATION_RACK_ID', $locid );
+	# If we don't have that value, it could be because the datacenter was changed
+	# In that case, the rack dropdown doesn't have the location id in its name anymore
+	# That's the response from device-ajax.pl?what=SiteRacks;type=dev;SITE_CODE=FRA1;RACK_LOCATION_ID=16411
+	if ( ! $rackid ) {
+		$rackid = $stab->cgi_parse_param( 'LOCATION_RACK_ID' );
+	}
 	if ( !$rackid ) {
 		return $numchanges;
 	}
@@ -710,17 +746,9 @@ sub update_location {
 ############################################################################
 
 sub delete_old_netblock {
-	my ( $stab, $oldblock ) = @_;
+	my ( $stab, $netblock_id ) = @_;
 
-	return undef unless ( defined($oldblock) );
-
-	#my $q = qq{
-	#		delete	from netblock
-	#	 where	netblock_id = ?
-	#};
-	#my $sth = $stab->prepare($q) || die $stab->return_db_err;
-	#$sth->execute( $oldblock->{ _dbx('NETBLOCK_ID') } )
-	#  || die $stab->return_db_err($sth);
+	return undef unless ( defined($netblock_id) );
 
 	my @qs = (
 		qq{delete from network_interface_netblock
@@ -731,29 +759,27 @@ sub delete_old_netblock {
 		},
 	);
 	foreach my $q (@qs) {
+		print $TMPF "$q\n";
 		my $sth = $stab->prepare($q) || $stab->return_db_err;
-		$sth->execute( $oldblock->{ _dbx('NETBLOCK_ID') } )
+		$sth->execute( $netblock_id )
 		  || $stab->return_db_err( $sth );
 	}
 }
 
 sub configure_nb_if_ok {
-	my ( $stab, $oldblock, $ip ) = @_;
+	my ( $stab, $netblock_id, $ip_ui ) = @_;
 
 	my $newblock = $stab->get_netblock_from_ip(
-		ip_address        => $ip,
+		ip_address        => $ip_ui,
 		is_single_address => 'Y',
 		netblock_type     => 'default',
 	);
 
-	#
-	# if netblocks aren't changing, then its ok.
-	#
-	if ( defined($oldblock) && defined($newblock) ) {
-		if ( $oldblock->{ _dbx('NETBLOCK_ID') } ==
-			$newblock->{ _dbx('NETBLOCK_ID') } )
-		{
-			return $oldblock;
+	# If netblocks aren't changing, then its ok.
+	if ( defined($netblock_id) && defined($newblock) ) {
+		if ( $netblock_id == $newblock->{ _dbx('NETBLOCK_ID') } ) {
+			# Just return the existing netblock
+			return $netblock_id;
 		} else {
 
 			# If the netblock is on a device, consider that bad.  Otherwise
@@ -762,29 +788,44 @@ sub configure_nb_if_ok {
 			# cleanup.
 			my $nbid = $newblock->{ _dbx('NETBLOCK_ID') };
 			if ( $stab->get_interface_from_netblock_id($nbid) ) {
-				return $stab->error_return("$ip is in use on a device");
+				return $stab->error_return("$ip_ui is in use on a device");
 			}
 		}
 	}
 
-	$newblock = $stab->configure_allocated_netblock( $ip, $newblock );
-	$newblock;
+	$newblock = $stab->configure_allocated_netblock( $ip_ui, $newblock );
+
+	# Check if the netblock could be allocated
+	if ( !defined($newblock) ) {
+		$stab->error_return( "Could not configure IP address "
+			  . ( defined($ip_ui) ? $ip_ui : "--unset--" )
+			  . "Seek help." );
+	}
+
+	$newblock->{ _dbx('NETBLOCK_ID') };
 }
 
-sub get_dns_record_from_netblock_id {
+# This function returns all dns records associated to a netblock
+sub get_dns_records_from_netblock_id {
 	my ( $stab, $id ) = @_;
 
+	printf $TMPF "Getting DNS records for netblock $id\n";
 	return undef unless ( defined($id) );
 
 	my $q = qq{
 		select *
-		 from	dns_record
+		from	dns_record
 		where	netblock_id = ?
- 	     and	should_generate_ptr = 'Y'
+		order by should_generate_ptr desc, dns_name
 	};
+	#  	    	and		should_generate_ptr = 'Y'
+
 	my $sth = $stab->prepare($q) || die $stab->return_db_err;
 	$sth->execute($id) || die $stab->return_db_err($sth);
-	my $hr = $sth->fetchrow_hashref;
+	# Get all records as a single hash with dns record ids being the keys
+	my $hr = $sth->fetchall_arrayref({});
+	$sth->finish;
+	$hr;
 }
 
 sub get_dns_record {
@@ -802,14 +843,20 @@ sub get_dns_record {
 	$hr;
 }
 
+# This function returns all network_interface columns for the specified id
 sub get_network_interface {
 	my ( $stab, $id ) = @_;
 
+	#my $q = qq{
+	#	select network_interface.*,network_interface_netblock.netblock_id
+	#	from	network_interface
+	#	left join network_interface_netblock
+	#	using   (network_interface_id)
+	#	where	network_interface_id = ?
+	#};
 	my $q = qq{
-		select network_interface.*,network_interface_netblock.netblock_id
+		select network_interface.*
 		from	network_interface
-		left join network_interface_netblock
-		using   (network_interface_id)
 		where	network_interface_id = ?
 	};
 	my $sth = $stab->prepare($q) || die $stab->return_db_err;
@@ -854,8 +901,11 @@ sub number_interface_kids {
 	$tally;
 }
 
+# This function deletes an interface and its purposes, if any
 sub delete_interface {
-	my ( $stab, $netintid, $ipdisposition ) = @_;
+	my ( $stab, $netintid ) = @_;
+
+	if( ! defined( $netintid ) ) { return 0; }
 
 	if ( my $tally = number_interface_kids( $stab, $netintid ) ) {
 		$stab->error_return(
@@ -863,111 +913,33 @@ sub delete_interface {
 		);
 	}
 
-	my $nbq = qq{
-		select	nin.netblock_id,
-			ni.physical_port_id,
-			ni.device_id,
-			nb.description,
-			dns.dns_record_id,
-			dns.dns_name,
-			dom.soa_name
-		  from	network_interface ni
-			inner join network_interface_netblock nin
-				using (network_interface_id)
-			inner join netblock nb on
-				nin.netblock_id = nb.netblock_id
-			left join dns_record dns on
-				dns.netblock_id = nin.netblock_id
-			left join dns_domain dom on
-				dom.dns_domain_id = dns.dns_domain_id
-		 where	ni.network_interface_id = ?
-	};
-	my $nbsth = $stab->prepare($nbq) || $stab->return_db_err;
-	$nbsth->execute($netintid) || $stab->return_db_err($nbsth);
-	my (
-		$nblkid, $ppid,  $ispri,  $ismgt, $devid,
-		$nbdesc, $dnsid, $dnsnam, $domain
-	) = $nbsth->fetchrow_array;
-	$nbsth->finish;
+	# Need to delete network interface purposes first
+	my $query_delete_purposes = qq(
+		delete from network_interface_purpose
+			where network_interface_id = ?
+	);
+	my $sth = $stab->prepare( $query_delete_purposes ) || $stab->return_db_err;
+	$sth->execute( $netintid )
+		|| $stab->return_db_err( $sth, "Can't delete network interface $netintid purposes.\n" );
 
-	if ($netintid) {
-		my @qs = (
-			qq{delete from network_interface_netblock
-				where network_interface_id = ?
-			},
-			qq{delete from network_interface
-				where network_interface_id = ?
-			},
-		);
-		foreach my $q (@qs) {
-			my $sth = $stab->prepare($q) || $stab->return_db_err;
-			$sth->execute($netintid)
-			  || $stab->return_db_err( $sth, "netintid: $netintid" );
-		}
+	# Delete the interface
+	# Note: the netblocks should be gone by now, the first query shouldn't be needed
+	my @qs = (
+		qq{delete from network_interface_netblock
+			where network_interface_id = ?
+		},
+		qq{delete from network_interface
+			where network_interface_id = ?
+		},
+	);
+	foreach my $q (@qs) {
+		my $sth = $stab->prepare($q) || $stab->return_db_err;
+		$sth->execute($netintid)
+			|| $stab->return_db_err( $sth, "netintid: $netintid" );
 	}
-
-	if ( !$nblkid ) {
-		$stab->commit || $stab->error_return;
-		return 1;
-	}
-
-	local_delete_netblock( $stab, $nblkid, $nbdesc, $ipdisposition );
 
 	$stab->commit || $stab->error_return;
 	1;
-}
-
-sub local_delete_netblock {
-	my ( $stab, $nblkid, $nbdesc, $ipdisposition ) = @_;
-	my $cgi = $stab->cgi || die "Could not create cgi";
-
-	my $dnsinfo = get_dnsids( $stab, $nblkid );
-
-	my $oldname;
-	while ( my $dnsid = shift(@$dnsinfo) ) {
-		last if ( !defined($dnsid) );
-		my $name = shift(@$dnsinfo);
-		my $q    = qq{
-			delete	from dns_record
-		 	 where	dns_record_id = ?
-		};
-		my $sth = $stab->prepare($q) || $stab->return_db_err;
-		$sth->execute($dnsid) || $stab->return_db_err( $sth, $dnsid );
-
-		$oldname = $name if ( !defined($oldname) );
-	}
-	$oldname = "not in dns" if ( !defined($oldname) );
-	if ( !defined($ipdisposition) || $ipdisposition eq 'reserve' ) {
-		my $setclause = "";
-		if ( !defined($nbdesc) ) {
-			$setclause = ", description = :descr";
-			$nbdesc    = "was $oldname";
-		}
-		my $q = qq{
-			update netblock
-				set netblock_status = 'Reserved'
-				$setclause
-			  where	netblock_id = :nblkid
-		};
-		my $sth = $stab->prepare($q) || $stab->return_db_err;
-		$sth->bind_param( ':nblkid', $nblkid )
-		  || $stab->return_db_err($sth);
-		if ( length($setclause) ) {
-			$sth->bind_param( ':descr', $nbdesc )
-			  || $stab->return_db_err($sth);
-		}
-		$sth->execute || $stab->return_db_err($sth);
-	} elsif ( $ipdisposition eq 'free' ) {
-		my $q = qq{
-			delete	from netblock
-			  where	netblock_id = ?
-		};
-		my $sth = $stab->prepare($q) || $stab->return_db_err;
-		$sth->execute($nblkid) || $stab->return_db_err($sth);
-	} else {
-		$stab->rollback;
-		$stab->error_return("Delete Failed.  Unknown IP Address Disposition");
-	}
 }
 
 sub get_dnsids {
@@ -993,88 +965,219 @@ sub get_dnsids {
 	\@dnsid;
 }
 
-sub process_ip {
-	my ( $stab, $oldblock, $ip, $dns, $dnsdomid ) = @_;
+sub process_netblock_and_dns {
+	my ( $stab, $network_interface_id, $netblock_id, $ip_ui, $refnumlockeddns, $refnumchanges ) = @_;
 
-	my $oldnbid;
+	print $TMPF "Processing DNS for IP $ip_ui\n";
 
-	if ( defined($oldblock) ) {
-		$oldnbid = $oldblock->{ _dbx('NETBLOCK_ID') };
-	}
+	# Get the existing DNS records for the netblock
+	# In case of IP change, this will only consider records that have been transferred to the new IP - see above
+	# This also means that updates to a DNS records that is left assigned to the old netblock won't be applied
+	my $dns_records;
+	$dns_records = get_dns_records_from_netblock_id( $stab, $netblock_id );
+	print $TMPF "DNS records found:\n";
+	print $TMPF Dumper( $dns_records );
 
-	my $numchanges = 0;
+	# Configure the netblock, but only if the requested ip address is not in use by another netbblock
+	# If the netblock allocation fails, this function fails with an error and the processing stops here
+	my $configured_netblock_id = configure_nb_if_ok( $stab, $netblock_id, $ip_ui );
+	printf $TMPF "Configured netblock id is $configured_netblock_id (was $netblock_id initially)\n";
 
-	#
-	# go make the netblock exist if  it is not already in use (and changed)
-	#
-	my $nblk = configure_nb_if_ok( $stab, $oldblock, $ip );
+	# Loop on the DNS records associated to the initial netblock
+	foreach my $dns_record ( @$dns_records ) {
 
-	if ( !$nblk ) {
-		$stab->error_return("Internal Error Processing IP address.");
-	}
+		my $dns_record_id = $dns_record->{'dns_record_id'};
 
-	if (
-		( !defined($oldblock) && defined($nblk) )
-		|| ( $oldblock->{ _dbx('NETBLOCK_ID') } !=
-			$nblk->{ _dbx('NETBLOCK_ID') } )
-	  )
-	{
-		$numchanges++;
-	}
+		print $TMPF "Processing DNS record id $dns_record_id, name ".$dns_record->{'dns_name'}."\n";
+		print $TMPF Dumper( $dns_record );
 
-	if ( !defined($nblk) ) {
-		$stab->error_return( "Could not configure IP address "
-			  . ( defined($ip) ? $ip : "--unset--" )
-			  . "Seek help." );
-	}
+		my $dns_ui			= $stab->cgi_parse_param( 'DNS_NAME',		$network_interface_id.'_'.$netblock_id.'_'.$dns_record_id );
+		my $dnsdom_ui		= $stab->cgi_parse_param( 'DNS_DOMAIN_ID',	$network_interface_id.'_'.$netblock_id.'_'.$dns_record_id );
+		my $dnsptr_ui		= $stab->cgi_parse_param( 'DNS_PTR',		$network_interface_id.'_'.$netblock_id );
+		my $dnstoggle_ui	= $stab->cgi_parse_param( 'DNS_TOGGLE',		$network_interface_id.'_'.$netblock_id.'_'.$dns_record_id );
 
-	my $dnsrec;
-	if ( defined($oldnbid) ) {
-		$dnsrec = get_dns_record_from_netblock_id( $stab, $oldnbid );
-	}
-
-	#
-	# This happens when there is no dns domain passed in from the form, such
-	# as when it was not edited.  In that case, we just use the existing one.
-	if ( !$dnsdomid && ref $dnsrec ) {
-		$dnsdomid = $dnsrec->{ _dbx('DNS_DOMAIN_ID') };
-		$dns      = $dnsrec->{ _dbx('DNS_NAME') };
-	}
-
-	if ( defined($dnsrec) && $dnsdomid ) {
-		my $type = 'A';
-		$type = 'AAAA' if ( $stab->validate_ip($ip) == 6 );
-		my $new_dns = {
-			DNS_NAME      => $dns,
-			DNS_DOMAIN_ID => $dnsdomid,
-			DNS_TYPE      => $type,
-			NETBLOCK_ID   => $nblk->{ _dbx('NETBLOCK_ID') }
-		};
-		my $diff = $stab->hash_table_diff( $dnsrec, _dbx($new_dns) );
-		if ( defined($diff) ) {
-			$numchanges += keys %$diff;
-			$stab->run_update_from_hash( 'dns_record', 'dns_record_id',
-				$dnsrec->{ _dbx('DNS_RECORD_ID') }, $diff );
+		# The value of the DNS_PTR radio group is the id of the selected group member
+		# There is on radio group per netblock and each group has N+1 member
+		# where N is the number of DNS records. The extra member is the new dns record.
+		if( $dnsptr_ui eq 'DNS_PTR_'.$network_interface_id.'_'.$netblock_id.'_'.$dns_record_id ) {
+			$dnsptr_ui = 'Y';
+		} else {
+			$dnsptr_ui = 'N';
 		}
-	} elsif ( defined($dns) && defined($dnsdomid) ) {
-		$numchanges++;
+
+		# Remove leading and trailing spaces from dns name
+		# Also remove trailing dots since they would just result in
+		# double dots in final zone generation
+		if ($dns_ui) {
+			$dns_ui =~ s/^\s+//;
+			$dns_ui =~ s/\s+$//;
+			$dns_ui =~ s/\.+$//;
+		}
+
+		printf $TMPF "DNS from UI: $dns_ui - DNS domain from UI: $dnsdom_ui\n";
+
+		# The DNS record is marked for deletion
+		if( $dnstoggle_ui eq 'delete' ) {
+			print $TMPF "Deleting DNS record $dns_record_id - including referring ones - for netblock $configured_netblock_id\n";
+			my @qs = (
+				qq{
+					delete from	dns_record
+					where		dns_value_record_id = ?
+				},
+				qq{
+					delete from	dns_record
+					where		dns_record_id = ?
+				},
+			);
+			foreach my $q (@qs) {
+				my $sth = $stab->prepare($q) || $stab->return_db_err;
+				print $TMPF Dumper( \$sth );
+				$sth->execute( $dns_record_id ) || $stab->return_db_err($sth);
+				$sth->finish;
+			}
+
+			$$refnumchanges++;
+			# Nothing else to process for this dns record, move to next one
+			next;
+		}
+
+		# At this point we know the dns record will be kept
+		# It can be updated, and may or may not be locked to the original ip address
+
+		# If the dns name or the dns domain are set to empty values, error out
+		if( ( !defined($dns_ui) or $dns_ui eq '' ) or ( !defined($dnsdom_ui) or $dnsdom_ui eq '-1' ) ) {
+			$stab->error_return( "DNS name or domain can't be empty. Use the delete button to remove a DNS record." );
+		}
+
+		# Validate the combination of ip, dns name and dns domain
+		# Emtpy values are ok in there (although we don't actually want that for existing records - see above)
+		validate_ip_dns_combo( $stab, $ip_ui, $dns_ui, $dnsdom_ui );
+
+		# Has the netblock changed (ip update) and isn't the dns record locked to the original IP?
+		my $new_netblock_id;
+		if( defined( $netblock_id ) &&
+			$netblock_id != $configured_netblock_id &&
+			$dnstoggle_ui ne 'lock'
+		) {
+			$new_netblock_id = $configured_netblock_id;
+			# Need to reassign just the primary DNS record to new netblock
+			printf $TMPF "Updating DNS record from netblock $netblock_id to $configured_netblock_id\n";
+			my $q    = qq{
+				update	dns_record
+				set		netblock_id = ?
+				where	dns_record_id = ?
+			};
+			my $sth = $stab->prepare($q) || $stab->return_db_err;
+			$sth->execute( $configured_netblock_id, $dns_record_id ) || $stab->return_db_err( $sth, $configured_netblock_id );
+			$sth->finish;
+
+		# The old netblock is not defined (new ip)
+		} elsif( ! defined( $netblock_id ) ) {
+			$new_netblock_id = $configured_netblock_id;
+
+		# Other casess:
+		# - the netblocks are not different (no ip change)
+		# - the dns record is locked to the original ip
+		} else {
+			# Is the dns record locked? If yes, count it.
+			if( $dnstoggle_ui eq 'lock' ) {	$$refnumlockeddns++; }
+			$new_netblock_id = $netblock_id;
+		}
+
+		# Is this DNS locked to the original ip?
+
+		# Does the DNS record need an update?
+		# This applies to the toggle values 'update' and 'lock', so in fact anything that is not 'delete'
 		my $type = 'A';
-		$type = 'AAAA' if ( $stab->validate_ip($ip) == 6 );
+		$type = 'AAAA' if ( $stab->validate_ip($ip_ui) == 6 );
+
+		my $new_dns = {
+			DNS_RECORD_ID		=> $dns_record_id,
+			DNS_NAME			=> $dns_ui,
+			DNS_DOMAIN_ID		=> $dnsdom_ui,
+			DNS_TYPE			=> $type,
+			NETBLOCK_ID			=> $new_netblock_id,
+			SHOULD_GENERATE_PTR	=> $dnsptr_ui
+		};
+
+		printf $TMPF "Checking if DNS info needs an update\n";
+		my $diff = $stab->hash_table_diff( $dns_record, _dbx( $new_dns ) );
+		if ( defined($diff) ) {
+			printf $TMPF "Updating DNS info for netblock\n";
+			printf $TMPF Dumper( $dns_record );
+			printf $TMPF Dumper( _dbx( $new_dns ) );
+			printf $TMPF Dumper( $diff );
+			printf $TMPF "Num changes before: $$refnumchanges\n";
+			$$refnumchanges += keys %$diff;
+			printf $TMPF "Num changes after: $$refnumchanges\n";
+			$stab->run_update_from_hash( 'dns_record', 'dns_record_id',
+				$dns_record_id, $diff );
+		}
+
+		# The IP has changed and DNS record is not locked to original IP
+		# The IP has changed and DNS record is locked to original IP
+
+	} # Enf of loop on DNS records for the netblock
+
+	# Check if we have to add a new DNS entry
+	my $dns_new_ui;
+	my $dnsdom_new_ui;
+	my $dnsptr_new_ui;
+
+	# Is it for an existing netblock?
+	if( defined( $netblock_id ) ) {
+		printf $TMPF "Checking if new dns entry must be added for existing netblock\n";
+		$dns_new_ui		= $stab->cgi_parse_param( 'DNS_NAME',			$network_interface_id.'_'.$netblock_id.'_new' );
+		$dnsdom_new_ui	= $stab->cgi_parse_param( 'DNS_DOMAIN_ID',		$network_interface_id.'_'.$netblock_id.'_new' );
+		$dnsptr_new_ui	= $stab->cgi_parse_param( 'DNS_PTR',			$network_interface_id.'_'.$netblock_id );
+
+		# The value of the DNS_PTR radio group is the id of the selected group member
+		# There is on radio group per netblock and each group has N+1 member
+		# where N is the number of DNS records. The extra member is the new dns record.
+		if( $dnsptr_new_ui eq 'DNS_PTR_'.$network_interface_id.'_'.$netblock_id.'_new' ) {
+			$dnsptr_new_ui = 'Y';
+		} else {
+			$dnsptr_new_ui = 'N';
+		}
+
+	# Or for a brand new netblock?
+	} else {
+		printf $TMPF "Checking if new dns entry must be added for new netblock\n";
+		$dns_new_ui		= $stab->cgi_parse_param( 'DNS_NAME',			$network_interface_id.'_new_new' );
+		$dnsdom_new_ui	= $stab->cgi_parse_param( 'DNS_DOMAIN_ID',		$network_interface_id.'_new_new' );
+		$dnsptr_new_ui	= $stab->cgi_parse_param( 'DNS_PTR',			$network_interface_id.'_new' );
+
+		# For new netblocks, the ptr field is just a checkbox, not a radio
+		$dnsptr_new_ui = $stab->mk_chk_yn($dnsptr_new_ui);
+	}
+
+	printf $TMPF "New DNS from UI: $dns_new_ui - New DNS domain from UI: $dnsdom_new_ui - PTR: $dnsptr_new_ui\n";
+
+	print $TMPF "Validating dns info ($dns_new_ui, $dnsdom_new_ui) for network interface $network_interface_id and netblock id $netblock_id (ip $ip_ui)\n";
+	# Validate the combination of ip, dns name and dns domain
+	validate_ip_dns_combo( $stab, $ip_ui, $dns_new_ui, $dnsdom_new_ui );
+
+	if( $dns_new_ui ) {
+		print $TMPF "Processing new dns info ($dns_new_ui, $dnsdom_new_ui) for network interface $network_interface_id and netblock id $netblock_id (ip $ip_ui)\n";
+		$$refnumchanges++;
+		my $type = 'A';
+		$type = 'AAAA' if ( $stab->validate_ip($ip_ui) == 6 );
 		$stab->add_dns_record(
 			{
-				dns_name      => $dns,
-				dns_domain_id => $dnsdomid,
+				dns_name      => $dns_new_ui,
+				dns_domain_id => $dnsdom_new_ui,
 				dns_type      => $type,
 				dns_class     => 'IN',
-				netblock_id   => $nblk->{ _dbx('NETBLOCK_ID') },
+				netblock_id   => $configured_netblock_id,
+				SHOULD_GENERATE_PTR	=> $dnsptr_new_ui,
 			}
 		);
+	} else {
+		printf $TMPF "No new DNS info found.\n";
 	}
 
-	if ( $numchanges == 0 ) {
-		return undef;
-	}
-	$nblk;
+	print $TMPF "Done processing DNS for IP $ip_ui\n\n";
+	$configured_netblock_id;
 }
 
 sub serial_abbr_to_field {
@@ -1673,6 +1776,7 @@ sub purge_physical_connection_by_physical_port_id {
 	$numchanges;
 }
 
+# This functions takes care of the referring dns records changes
 sub update_all_dns_value_references {
 	my ( $stab, $devid ) = @_;
 
@@ -1724,16 +1828,15 @@ sub update_all_dns_value_references {
 	return $numchanges;
 }
 
+# This function loops on all interfaces of a device to process them
 sub update_all_interfaces {
 	my ( $stab, $devid ) = @_;
 
+	print $TMPF "Processing device $devid\n";
+
 	my $numchanges = 0;
 
-	# These need to be processed in the correct order  (children first,
-	# then parents) so as not to order out.
-
-	# XXX HOWEVER -- right now, there are no parent/child relationships.
-	# So, yay.
+	# Get the network interfaces from the database
 	my $sth = $stab->prepare(
 		qq{
 		select	network_interface_id
@@ -1743,42 +1846,32 @@ sub update_all_interfaces {
 	}
 	) || $stab->return_db_err;
 
-	#
-	# process updates, then deletions.  That way child interfaces can be
-	# moved to non-virtual interfaces, then parent interfaces moved in the
-	# same transaction.
-	#
-
-	my (@rmids);
 	$sth->execute($devid) || $stab->return_db_err($sth);
-	while ( my ($netintid) = $sth->fetchrow_array ) {
-		my $p = $stab->cgi_parse_param( 'NETWORK_INTERFACE_ID', $netintid );
 
-		if ($p) {    # also look at chk_RM_NET_INT_PRESERVEIPS
-			my $rmint =
-			  $stab->cgi_parse_param( 'chk_RM_NETWORK_INTERFACE', $netintid );
-			if ( !defined($rmint) ) {
-				$numchanges += update_interface( $stab, $devid, $netintid );
-			} else {
-				push( @rmids, $netintid );
-			}
-		}
-	}
+	# Loop on network interfaces found in the database for the current device
 
-	# also look at chk_RM_NET_INT_PRESERVEIPS
-	# process all the deletions
-	foreach my $netintid (@rmids) {
-		my $delit =
-		  $stab->cgi_parse_param( 'chk_RM_NETWORK_INTERFACE', $netintid );
-		my $preserveip =
-		  $stab->cgi_parse_param( 'chk_RM_NET_INT_PRESERVEIPS', $netintid );
+	# TODO - if an ip is deleted / unlinked from an interface, this interface should be processed first
+	# in order to be able - in the same transaction - to add it to another interface
+	# The only way to do that is to first loop on all interfaces and netblocks and check the toggles status
 
-		if ($delit) {
-			if ( defined($preserveip) ) {
-				delete_interface( $stab, $netintid, 'reserve' );
-			} else {
-				delete_interface( $stab, $netintid, 'free' );
-			}
+	while ( my ($network_interface_id) = $sth->fetchrow_array ) {
+
+		# Get the interface values from the UI
+		my $p = $stab->cgi_parse_param( 'NETWORK_INTERFACE_ID', $network_interface_id );
+		my $network_interface_toggle_ui = $stab->cgi_parse_param( 'NETWORK_INTERFACE_TOGGLE', $network_interface_id );
+
+		# Ignore the interface if it's only in the DB but not in the UI
+		# This can happen if the submit button was pressed without the IP/Network tab loaded
+		if( ! defined( $p ) ) { next; }
+
+		# The interface will now be processed. That includes its netblocks and their dns records.
+		# This is necessary even if the interface will be deleted
+		$numchanges += update_interface( $stab, $devid, $network_interface_id );
+
+		# Is the interface marked for deletion?
+		if ( $network_interface_toggle_ui eq 'delete' ) {
+			print $TMPF "Network interface $network_interface_id is flagged for deletion\n";
+			delete_interface( $stab, $network_interface_id );
 			$numchanges++;
 		}
 	}
@@ -1786,167 +1879,324 @@ sub update_all_interfaces {
 	$numchanges;
 }
 
+# This functions makes sure that the requested ip/dns/dns domain config is valid
+sub validate_ip_dns_combo {
+	my ( $stab, $ip, $dnsname, $dnsdomain ) = @_;
+
+	# Make sure a dns value is not specified without ip
+	if( !defined($ip) && defined($dnsname) ) {
+		$stab->error_return( "You must set an IP address with the DNS name $dnsname." );
+	}
+	# Don't allow a dns name without a domain
+	if( $dnsname && ( !$dnsdomain || $dnsdomain eq '-1' ) ) {
+		$stab->error_return( "You must specify a domain for the DNS entry $dnsname." );
+	}
+	# And check if a dns domain is given without dns name
+	if( !defined($dnsname) && defined($dnsdomain) && $dnsdomain ne '-1' ) {
+		$stab->error_return( "You must set a DNS name for each specified DNS domain." );
+	}
+	# Finally, we need to check if the dnsname doesn't contain an existing child domain
+	# Like abc.ams1 with domain appnexus.net while ams1.appnexus.net exists
+
+	# If the dns name has no dot, there is nothig to check
+	if( $dnsname !~ /\./ ) { return; }
+
+	# Get a list of existing domains
+	my $sth = $stab->prepare(
+		qq{
+			select		dns_domain_id, soa_name
+			from		dns_domain
+			order by	soa_name
+		}
+	);
+	$sth->execute() || die $sth->errstr;
+	my $domains_by_id = $sth->fetchall_hashref( 'dns_domain_id' );
+	my %domains_by_soa;
+	foreach my $dns_domain_id ( keys %{$domains_by_id} ) {
+		$domains_by_soa{ $domains_by_id->{ $dns_domain_id }{'soa_name'} } = $domains_by_id->{ $dns_domain_id }{'dns_domain_id'};
+	}
+	# Get the dns name part after the last dot
+	my @parts = split /\./, $dnsname;
+	my $lastpart = $parts[-1];
+	# Get the dns domain corresponding to the id
+	my $dnsdomainname = $domains_by_id->{$dnsdomain}{'soa_name'};
+	if( exists( $domains_by_soa{ $lastpart.'.'.$dnsdomainname } ) ) {
+		$stab->error_return( "You can't use .$lastpart in the DNS name, you must use $lastpart.$dnsdomainname as the domain." );
+	}
+}
+
+# This function makes sure that the specified mac address has a valid format
+# TODO - It doesn't check its uniqueness in the database thouggh - do we want to do that?
+sub validate_mac_address {
+  my ( $stab, $macaddress ) = @_;
+  if( $macaddress eq '' ) { return; }
+  if( $macaddress !~ /^([0-9a-fA-F]{2}:){5}([0-9a-fA-F]){2}$/ ) {
+	$stab->error_return( "The specified mac address '$macaddress' is not valid." );
+  }
+}
+
+# This function processes an interface
 sub update_interface {
 	my ( $stab, $devid, $netintid ) = @_;
 	my $cgi = $stab->cgi || die "Could not create cgi";
 
-	my $intname = $stab->cgi_parse_param( 'NETWORK_INTERFACE_NAME', $netintid );
-	my $macaddr = $stab->cgi_parse_param( 'MAC_ADDR',               $netintid );
-	my $dns     = $stab->cgi_parse_param( 'DNS_NAME',               $netintid );
-	my $dnsdomid = $stab->cgi_parse_param( 'DNS_DOMAIN_ID', $netintid );
-	my $desc     = $stab->cgi_parse_param( 'DESCRIPTION',   $netintid );
-	my $ip       = $stab->cgi_parse_param( 'IP',            $netintid );
-	my $nitype  = $stab->cgi_parse_param( 'NETWORK_INTERFACE_TYPE', $netintid );
-	my $isintup = $stab->cgi_parse_param( 'chk_IS_INTERFACE_UP',    $netintid );
-	my $shldmng = $stab->cgi_parse_param( 'chk_SHOULD_MANAGE',      $netintid );
-	my $shldmon = $stab->cgi_parse_param( 'chk_SHOULD_MONITOR',     $netintid );
+	my $numchanges = 0;
 
-	$isintup = $stab->mk_chk_yn($isintup);
-	$shldmng = $stab->mk_chk_yn($shldmng);
-	$shldmon = $stab->mk_chk_yn($shldmon);
+	print $TMPF "Processing network interface $netintid\n";
 
+	# Read the network interface values from the UI
+	# Note: most values will be empty if the toggle state is 'delete'
+	# because the html input fields are disabled in this case
+	my $intname = $stab->cgi_parse_param( 'NETWORK_INTERFACE_NAME',			$netintid );
+	my $nitype  = $stab->cgi_parse_param( 'NETWORK_INTERFACE_TYPE',			$netintid );
+	my $macaddr = $stab->cgi_parse_param( 'MAC_ADDR',						$netintid );
+	my $desc	= $stab->cgi_parse_param( 'NETWORK_INTERFACE_DESCRIPTION',	$netintid );
+	my $network_interface_toggle_ui = $stab->cgi_parse_param( 'NETWORK_INTERFACE_TOGGLE', $netintid );
+	# Make sure checkboxes are reported as Y or N only
+	my $isintup = $stab->mk_chk_yn( $stab->cgi_parse_param( 'chk_IS_INTERFACE_UP',    $netintid ) );
+	my $shldmng = $stab->mk_chk_yn( $stab->cgi_parse_param( 'chk_SHOULD_MANAGE',      $netintid ) );
+	my $shldmon = $stab->mk_chk_yn( $stab->cgi_parse_param( 'chk_SHOULD_MONITOR',     $netintid ) );
+
+	# Remove leading and trailing spaces from the interface name
 	if ($intname) {
 		$intname =~ s/^\s+//;
 		$intname =~ s/\s+$//;
 	}
-	if ($dns) {
-		$dns =~ s/^\s+//;
-		$dns =~ s/\s+$//;
 
-		# remove trailing dots since they would just result in
-		# double dots in final zone generation
-		$dns =~ s/\.+$//;
-	}
+	# Make sure the mac address has a correct format
+	validate_mac_address( $stab, $macaddr );
 
-	if ( $ip && !$stab->validate_ip($ip) ) {
-		$stab->error_return("$ip is an invalid IP address");
-	}
+	# Get the network interface details from the database
+	my $network_interface_db = get_network_interface( $stab, $netintid );
 
-	if ( !defined($ip) && defined($dns)) {
-		$stab->error_return("You must set an IP address with a DNS name");
-	}
-
-	if ( $dns && !$dnsdomid ) {
-		$stab->error_return(
-			"You must specify a domain when adding a dns entry.");
-	}
-
-	# Check if a dns domain is given but no dns name
-	if ( !defined($dns) && defined($dnsdomid) ) {
-		$stab->error_return("You must set a DNS name with a DNS domain");
-	}
-
-	my $numchanges = 0;
-
-	#
-	# sanity check the mac address (convert to an integer).
-	#
-	my $procdmac = undef;
-	if ( defined($macaddr) ) {
-
-		# $procdmac = $stab->int_mac_from_text($macaddr);
-		$procdmac = $macaddr;
-		if ( !defined($procdmac) ) {
-			$stab->error_return( "Unable to parse mac address "
-				  . ( ( defined($macaddr) ) ? $macaddr : "" ) );
-		}
-	}
-
-	#
-	# ok, at this point, it's time to update
-	#
-	my $old_int = get_network_interface( $stab, $netintid );
-
-	#
-	# first deal with the netblock, including grabbing old dns info
-	#
-	my $oldblock =
-	  $stab->get_netblock_from_id( $old_int->{ _dbx('NETBLOCK_ID') } );
-
-	#
-	# properly deal with keeping IP address around
-	#
-	my ( $nblk, $nblkid );
-	if ($ip) {
-		$nblk = process_ip( $stab, $oldblock, $ip, $dns, $dnsdomid );
-
-		if ( defined($nblk) ) {
-			$numchanges++;
-		} else {
-			$nblk = $oldblock;
-		}
-		$nblkid = $nblk->{ _dbx('NETBLOCK_ID') };
-	} else {
-
-		#
-		# in this case, the IP was removed, which means it should
-		# be disassociated with the interface and removed.  At
-		#
-		if ($oldblock) {
-			$numchanges++;
-			my $q = qq{
-				update netblock
-					set netblock_status = 'Reserved'
-				  where	netblock_id = ?
-			};
-			my $sth = $stab->prepare($q) || $stab->return_db_err;
-			$sth->execute( $oldblock->{ _dbx('NETBLOCK_ID') } );
-		}
-		$nblkid = undef;
-	}
-
-	#
-	# doing this earlier in case the physical port exists already
-	#
-	my $newppid = $old_int->{ _dbx('PHYSICAL_PORT_ID') };
-	if ( $old_int->{ _dbx('NETWORK_INTERFACE_NAME') } ne $intname ) {
+	# Update the physical port name
+	my $newppid = $network_interface_db->{ _dbx('PHYSICAL_PORT_ID') };
+	if ( $network_interface_db->{ _dbx('NETWORK_INTERFACE_NAME') } ne $intname ) {
 		$newppid =
-		  rename_physical_port( $stab, $old_int->{ _dbx('PHYSICAL_PORT_ID') },
+		  rename_physical_port( $stab, $network_interface_db->{ _dbx('PHYSICAL_PORT_ID') },
 			$intname, $devid );
 		$numchanges++;
 	}
 
-	#
-	# if there was a parent interface, and its switching from virtual to
-	# something else, then delete the parent/child relationship
-	#
-	my $newparent = $old_int->{ _dbx('PARENT_NETWORK_INTERFACE_ID') };
-	if (   $old_int->{ _dbx('NETWORK_INTERFACE_TYPE') } ne $nitype
-		&& $nitype ne 'virtual' )
-	{
-		if ($newparent) {
-			$newparent = undef;
+	# Let's get the associated netblocks from the database
+	my $sth = $stab->prepare(
+		qq{
+		select		netblock.netblock_id
+		from		network_interface
+		left join	network_interface_netblock using( network_interface_id )
+		left join	netblock using (netblock_id)
+		where		network_interface.device_id = ?
+		and			network_interface.network_interface_id = ?
+		order by	netblock.netblock_id
+	}
+	) || $stab->return_db_err;
+
+	$sth->execute( $devid, $netintid ) || $stab->return_db_err($sth);
+
+	# Loop on existing netblocks in the database
+	while ( my ($netblock_id) = $sth->fetchrow_array ) {
+
+		# The query above has left joins, so ignore null netblock ids, if any
+		if( ! $netblock_id ) { next; }
+
+		print $TMPF "Processing network interface $netintid, netblock $netblock_id\n";
+
+		# Read the current netblock values from the UI
+		my $netblock_toggle_ui	= $stab->cgi_parse_param( 'NETBLOCK_TOGGLE',	$netintid.'_'.$netblock_id );
+		my $ip_ui				= $stab->cgi_parse_param( 'IP',					$netintid.'_'.$netblock_id );
+
+		# Validate the ip address
+		if( !defined($ip_ui) && $netblock_toggle_ui ne 'delete' ) {
+			$stab->error_return( "Empty IP address fields are not supported. To delete an IP address, use the red cross button in front ot it." );
 		}
+		if( defined($ip_ui) && !$stab->validate_ip($ip_ui) ) {
+			$stab->error_return( "$ip_ui is an invalid IP address" );
+		}
+
+		# If the netblock is not marked for deletion (so, update or unlink), process it
+		if( $netblock_toggle_ui ne 'delete' ) {
+			print $TMPF "Netblock $netblock_id is not flagged for deletion\n";
+			$numchanges += process_interface_netblock( $stab, $devid, $netintid, $netblock_id, $ip_ui );
+		}
+
+		# Is the netblock marked to be disassociated from the network interface?
+		if( $netblock_toggle_ui eq 'unlink' ) {
+
+			print $TMPF "Disassociating netblock $netblock_id.\n";
+			my @qs = (
+				qq{
+					update	netblock
+					set		netblock_status = 'Reserved'
+					where	netblock_id = ?
+				},
+				qq{
+					delete from	network_interface_netblock
+					where		netblock_id = ?
+				},
+			);
+
+			foreach my $q (@qs) {
+				my $sth = $stab->prepare($q) || $stab->return_db_err;
+				$sth->execute( $netblock_id )
+				|| $stab->return_db_err( $sth );
+			}
+
+			$numchanges++;
+
+		# The netblock is flagged for removal and the ip address will be deleted, not disassociated
+		} elsif( $netblock_toggle_ui eq 'delete' ) {
+
+			# First delete the DNS records starting with their referring records
+			print $TMPF "Deleting DNS records - including referring ones - for netblock $netblock_id\n";
+			my @qs = (
+				qq{
+ 					delete from	dns_record
+					where		dns_value_record_id in (
+						select	dns_record_id
+						from	dns_record
+						where	netblock_id = ?
+					)
+				},
+				qq{
+					delete from	dns_record
+					where		netblock_id = ?
+				},
+			);
+			foreach my $q (@qs) {
+				my $sth = $stab->prepare($q) || $stab->return_db_err;
+				$sth->execute( $netblock_id );
+			}
+
+			# Then delete the netblock itself
+			print $TMPF "Deleting netblock $netblock_id\n";
+			delete_old_netblock( $stab, $netblock_id );
+
+			$numchanges++;
+		}
+	} # End of loop on netblocks
+
+	# Check if we need to add a new netblock to the interface
+	my $new_ip		= $stab->cgi_parse_param( 'IP',				$netintid.'_new' );
+	my $new_dns		= $stab->cgi_parse_param( 'DNS_NAME',		$netintid.'_new_new' );
+	my $new_dnsdom	= $stab->cgi_parse_param( 'DNS_DOMAIN_ID',	$netintid.'_new_new' );
+
+	# If no new ip is provided, but the dns name or domain is set, error out
+	if( !defined($new_ip) and ( defined($new_dns) or (defined($new_dnsdom) and $new_dnsdom ne '-1' ) ) ) {
+		$stab->error_return( "DNS information can't be supplied without a valid IP address." );
+	}
+	# Validate the combination of ip, dns name and dns domain
+	# Emtpy values are ok
+	validate_ip_dns_combo( $stab, $new_ip, $new_dns, $new_dnsdom );
+
+	# Process the netblock if the new ip address is defined
+	if( defined($new_ip) ) {
+		# Validate the ip address
+		print $TMPF "Validating new ip $new_ip ($new_dns, $new_dnsdom) for network interface $netintid\n";
+		if( !$stab->validate_ip($new_ip) ) {
+			$stab->error_return( "$new_ip is an invalid IP address" );
+		}
+		print $TMPF "Processing new ip $new_ip ($new_dns, $new_dnsdom) for network interface $netintid\n";
+		$numchanges += process_interface_netblock( $stab, $devid, $netintid, undef, $new_ip );
 	}
 
-	#
-	# now go and update the netblock itself.
-	#
-	# Is the ip address changing from a non-empty value to a different non-empty value?
-	if ( $nblkid && $old_int->{ _dbx('NETBLOCK_ID') } && $old_int->{ _dbx('NETBLOCK_ID') } != $nblkid ) {
+	# If the network interface is marked for deletion, we're done
+	if( $network_interface_toggle_ui eq 'delete' ) {
+		return $numchanges;
+	}
+
+	print $TMPF "Checking if network interface $netintid must be updated\n";
+
+	# Update the network interface
+	my $new_int = {
+		NETWORK_INTERFACE_ID   => $network_interface_db->{ _dbx('NETWORK_INTERFACE_ID') },
+		NETWORK_INTERFACE_NAME => $intname,
+		NETWORK_INTERFACE_TYPE => $nitype,
+		IS_INTERFACE_UP        => $isintup,
+		MAC_ADDR               => $macaddr,
+		SHOULD_MONITOR         => $shldmon,
+		SHOULD_MANAGE          => $shldmng,
+		DESCRIPTION            => $desc,
+	};
+
+	my $diff = $stab->hash_table_diff( $network_interface_db, _dbx($new_int) );
+	print $TMPF Dumper( $diff );
+	$numchanges += keys %$diff;
+	$stab->run_update_from_hash( 'network_interface',
+		'network_interface_id',
+		$network_interface_db->{ _dbx('NETWORK_INTERFACE_ID') }, $diff );
+
+	$numchanges += manipulate_network_interface_purpose( $stab, $netintid, $devid );
+
+	print $TMPF "Done updating interface\n";
+
+	$numchanges;
+}
+
+# Process the update of one netblock of a network interface, including its dns records
+sub process_interface_netblock {
+
+	my ( $stab, $devid, $network_interface_id, $netblock_id, $ip_ui ) = @_;
+	my $cgi = $stab->cgi || die "Could not create cgi";
+
+	my $numchanges = 0;
+	my $numlockeddns = 0;
+
+	print $TMPF "Processing netblock $netblock_id with target ip $ip_ui\n";
+
+	# properly deal with keeping IP address around
+	my $configured_netblock_id;
+	$configured_netblock_id = process_netblock_and_dns( $stab, $network_interface_id, $netblock_id, $ip_ui, \$numlockeddns, \$numchanges );
+
+	print $TMPF "Netblock is $configured_netblock_id (was $netblock_id initially)\n";
+
+	# The ip address is changing
+	if ( defined( $netblock_id ) && $netblock_id != $configured_netblock_id ) {
+
+		print $TMPF "Updating netblock id from $netblock_id to $configured_netblock_id for interface $network_interface_id in DB.\n";
 		my $old_nb = {
-			NETWORK_INTERFACE_ID   => $old_int->{ _dbx('NETWORK_INTERFACE_ID') },
-			NETBLOCK_ID            => $old_int->{ _dbx('NETBLOCK_ID') },
+			NETWORK_INTERFACE_ID   => $network_interface_id,
+			NETBLOCK_ID            => $netblock_id,
 		};
 
 		my $new_nb = {
-			NETWORK_INTERFACE_ID   => $old_int->{ _dbx('NETWORK_INTERFACE_ID') },
-			NETBLOCK_ID            => $nblkid,
+			NETWORK_INTERFACE_ID   => $network_interface_id,
+			NETBLOCK_ID            => $configured_netblock_id,
 		};
 
 		my $diffnb = $stab->hash_table_diff( $old_nb, $new_nb );
+		print $TMPF Dumper( $diffnb );
 		$numchanges += keys %$diffnb;
-		$stab->run_update_from_hash( 'network_interface_netblock',
-			'network_interface_id',
-			$old_int->{ _dbx('NETWORK_INTERFACE_ID') }, $diffnb );
+		$stab->run_update_from_hash(
+			'network_interface_netblock',
+			'netblock_id',
+			$netblock_id,
+			$diffnb
+		);
+		$numchanges++;
 
-	# Is the ip address changing from an empty value to a non-empty value?
-	} elsif ( $nblkid && ! $old_int->{ _dbx('NETBLOCK_ID') } ) {
+		# Delete the old netblock, but only if no DNS is locked to the original IP
+		print $TMPF "Number of locked DNS record: $numlockeddns\n";
+		if( $numlockeddns == 0 ) {
+		  print $TMPF "Deleting old netblock $netblock_id\n";
+		  delete_old_netblock( $stab, $netblock_id );
+  		  $numchanges++;
+		}
+
+	# A new ip address is being added?
+	} elsif ( ! defined( $netblock_id ) ) {
+
+		# We need to get a free interface rank first
+		my $iFreeRank = find_free_network_interface_rank( $stab, $network_interface_id );
+
 		my $new = {
-			NETWORK_INTERFACE_ID   => $old_int->{ _dbx('NETWORK_INTERFACE_ID') },
-			NETBLOCK_ID            => $nblkid,
+			NETWORK_INTERFACE_ID	=> $network_interface_id,
+			NETBLOCK_ID				=> $configured_netblock_id,
+			NETWORK_INTERFACE_RANK	=> $iFreeRank,
 		};
 		my @errs;
+		print $TMPF Dumper( $configured_netblock_id );
+		print $TMPF "Assigning new netblock id $configured_netblock_id tp interface $network_interface_id in DB.\n";
+		print $TMPF Dumper( $new );
 		if (
 			!(
 				$numchanges += $stab->DBInsert(
@@ -1957,50 +2207,67 @@ sub update_interface {
 			)
 		  )
 		{
+			print $TMPF Dumper( @errs );
 			$stab->error_return( join( " ", @errs ) );
 		}
-	}
 
-	my $new_int = {
-		NETWORK_INTERFACE_ID   => $old_int->{ _dbx('NETWORK_INTERFACE_ID') },
-		NETWORK_INTERFACE_NAME => $intname,
-		NETWORK_INTERFACE_TYPE => $nitype,
-		IS_INTERFACE_UP        => $isintup,
-		MAC_ADDR               => $procdmac,
-		SHOULD_MONITOR         => $shldmon,
-		#NETBLOCK_ID            => $nblkid,
-		SHOULD_MANAGE          => $shldmng,
-		DESCRIPTION            => $desc,
-
-		#- PHYSICAL_PORT_ID => $newppid,
-		#- PARENT_NETWORK_INTERFACE_ID => $newparent,
-	};
-
-	my $diff = $stab->hash_table_diff( $old_int, _dbx($new_int) );
-	$numchanges += keys %$diff;
-	$stab->run_update_from_hash( 'network_interface',
-		'network_interface_id',
-		$old_int->{ _dbx('NETWORK_INTERFACE_ID') }, $diff );
-
-	#
-	# now delete the old netblock if required.
-	#
-	if ( defined($oldblock) && ( ! $ip || ( defined($nblk) && $oldblock->{ _dbx('NETBLOCK_ID') } != $nblk->{ _dbx('NETBLOCK_ID') } ) ) ) {
-		delete_old_netblock( $stab, $oldblock );
 		$numchanges++;
 	}
-
-	$numchanges +=
-	  manipulate_network_interface_purpose( $stab, $netintid, $devid );
-
+	
 	$numchanges;
 }
 
+sub find_free_network_interface_rank {
+
+	my ( $stab, $network_interface_id ) = @_;
+
+	my $query_get_rank = qq{
+		select		network_interface_rank
+		from		network_interface_netblock
+		where		network_interface_id = ?
+		order by	network_interface_rank
+	};
+	my $sth_get_rank = $stab->prepare($query_get_rank) || die $stab->return_db_err;
+	$sth_get_rank->execute($network_interface_id) || die $stab->return_db_err($sth_get_rank);
+	my $ranks = $sth_get_rank->fetchall_arrayref([0]);
+	$sth_get_rank->finish;
+
+	# Map the ranks array to a hash for easier processing
+	my %hRanks;
+	foreach my $row ( @{$ranks} ) {
+		$hRanks{  @{$row}[0] } = 1;
+	}
+
+	my $iFreeRank = -1;
+	my $iTestRank = 0;
+	while( $iTestRank < 1000 ) {
+		if( exists( $hRanks{ $iTestRank } ) ) {
+			$iTestRank++;
+			next;
+		}
+		$iFreeRank = $iTestRank;
+		last; 
+	}
+
+	print $TMPF "Free network interface rank found: $iFreeRank\n";
+
+	# Safety check: if we couldn't find a free rank before reaching 1000, there is a problem
+	if( $iTestRank == 1000 ) {
+		$stab->error_return( "Couldn't find a free network interface rank for interface $network_interface_id" );
+	}
+
+	$iFreeRank;
+}
+
+# This function seems to delete all purposes and recreate them.
+# TODO - Is that really necessary??
 sub manipulate_network_interface_purpose {
-	my ( $stab, $netintid, $devid ) = @_;
+	my ( $stab, $netintid, $devid, $new ) = @_;
 
 	my $cgi     = $stab->cgi || die "Could not create cgi";
-	my @newpurp = $cgi->multi_param( 'NETWORK_INTERFACE_PURPOSE_' . $netintid );
+
+	my $ui_field_id = ( defined( $new ) ) ? $new : $netintid;
+	my @newpurp = $cgi->multi_param( 'NETWORK_INTERFACE_PURPOSE_' . $ui_field_id );
 
 	my $oldpurp = $stab->get_network_int_purpose($netintid);
 
@@ -2287,18 +2554,25 @@ sub add_interfaces {
 
 	my $cgi = $stab->cgi;
 
-	my $netintid = $stab->cgi_parse_param('NETWORK_INTERFACE_ID');
-	my $intname  = $stab->cgi_parse_param('NETWORK_INTERFACE_NAME');
-	my $macaddr  = $stab->cgi_parse_param('MAC_ADDR');
-	my $dns      = $stab->cgi_parse_param('DNS_NAME');
-	my $dnsdomid = $stab->cgi_parse_param('DNS_DOMAIN_ID');
-	my $ip       = $stab->cgi_parse_param('IP');
-	my $nitype   = $stab->cgi_parse_param('NETWORK_INTERFACE_TYPE');
-	my $isintup  = $stab->cgi_parse_param('chk_IS_INTERFACE_UP');
-	my $ismgmtip = $stab->cgi_parse_param('chk_IS_MANAGEMENT_INTERFACE');
-	my $ispriint = $stab->cgi_parse_param('chk_IS_PRIMARY');
-	my $shldmng  = $stab->cgi_parse_param('chk_SHOULD_MANAGE');
-	my $shldmon  = $stab->cgi_parse_param('chk_SHOULD_MONITOR');
+	my $netintid 		= $stab->cgi_parse_param('NETWORK_INTERFACE_ID');
+	my $intname  		= $stab->cgi_parse_param('NETWORK_INTERFACE_NAME');
+	my $nitype   		= $stab->cgi_parse_param('NETWORK_INTERFACE_TYPE');
+	my $macaddr  		= $stab->cgi_parse_param('MAC_ADDR');
+
+	my $ip       		= $stab->cgi_parse_param('IP_new_new');
+	my $dns      		= $stab->cgi_parse_param('DNS_NAME_new_new_new');
+	my $dnsdom_ui		= $stab->cgi_parse_param('DNS_DOMAIN_ID_new_new_new');
+	my $dnsptr_ui		= $stab->cgi_parse_param( 'DNS_PTR_new_new' );
+
+	my $isintup  		= $stab->cgi_parse_param('chk_IS_INTERFACE_UP');
+	my $ismgmtip 		= $stab->cgi_parse_param('chk_IS_MANAGEMENT_INTERFACE');
+	my $ispriint 		= $stab->cgi_parse_param('chk_IS_PRIMARY');
+	my $shldmng  		= $stab->cgi_parse_param('chk_SHOULD_MANAGE');
+	my $shldmon  		= $stab->cgi_parse_param('chk_SHOULD_MONITOR');
+
+	my $desc			= $stab->cgi_parse_param( 'NETWORK_INTERFACE_DESCRIPTION_new' );
+	
+	print $TMPF "Processing new interface, if any ($netintid, $intname, $nitype, $macaddr, $ip, $dns, $dnsdom_ui)\n";
 
 	if ($intname) {
 		$intname =~ s/^\s+//;
@@ -2321,8 +2595,26 @@ sub add_interfaces {
 	$ispriint = $stab->mk_chk_yn($ispriint);
 	$shldmng  = $stab->mk_chk_yn($shldmng);
 	$shldmon  = $stab->mk_chk_yn($shldmon);
+	$dnsptr_ui = $stab->mk_chk_yn($dnsptr_ui);
 
-	return 0 if ( !defined($intname) );
+	# Check if some parameter was supplied without an acutal interface name
+	if( !defined( $intname ) ) {
+		if( defined( $nitype ) ) {
+			$stab->error_return("An interface type can't be speicified without an interface name.");
+		}
+		if( defined( $macaddr ) ) {
+			$stab->error_return("A MAC address can't be speicified without an interface name.");
+		}
+		if( defined( $ip ) ) {
+			$stab->error_return("An IP address can't be speicified without an interface name.");
+		}
+		if( defined( $dns ) or ( defined( $dnsdom_ui ) and $dnsdom_ui ne '-1' ) ) {
+			$stab->error_return("DNS information can't be speicified without an interface name.");
+		}
+
+		# Without a new interface name, there is nothing to do
+		return 0;
+	}
 
 	my $device = $stab->get_dev_from_devid($devid);
 
@@ -2334,28 +2626,17 @@ sub add_interfaces {
 		$stab->error_return("You must set an interface type");
 	}
 
-	#if ( !defined($ip) ) {
-	#		$stab->error_return("You must set an IP address");
-	#}
-
-	if ( !defined($ip) && defined($dns)) {
-		$stab->error_return("You must set an IP address with a DNS name");
+	if ( !defined($ip) and ( defined($dns) or ( defined( $dnsdom_ui ) and $dnsdom_ui ne '-1' ) ) ) {
+		$stab->error_return( "DNS information can't be specified without an IP address." );
 	}
 
 	# Check if a dns name is given but no dns domain
-	if ( defined($dns) && !defined($dnsdomid) ) {
-
-		#
-		# not sure if this is a good idea or not.
-		#
-		$dnsdomid = $stab->guess_dns_domain_from_devid($device);
-		if ( !defined($dnsdomid) ) {
-			$stab->error_return("You must set a DNS domain with a DNS name");
-		}
+	if ( defined($dns) and ( !defined($dnsdom_ui) or $dnsdom_ui eq '-1' ) ) {
+		$stab->error_return("You must set a DNS domain with a DNS name");
 	}
 
 	# Check if a dns domain is given but no dns name
-	if ( !defined($dns) && defined($dnsdomid) ) {
+	if ( !defined($dns) and defined($dnsdom_ui) and $dnsdom_ui ne '-1' ) {
 		$stab->error_return("You must set a DNS name with a DNS domain");
 	}
 
@@ -2394,18 +2675,8 @@ sub add_interfaces {
 		$ppid = $pp->{ _dbx('PHYSICAL_PORT_ID') };
 	}
 
-	#
-	# sanity check the mac address (convert to an integer).
-	# required for oracle
-	#
-	#	my $procdmac = undef;
-	#	if(defined($macaddr)) {
-	#		$procdmac = $stab->int_mac_from_text($macaddr);
-	#		if(!defined($procdmac)) {
-	#			$stab->error_return("Unable to parse mac address ".
-	#				((defined($macaddr))?$macaddr:"") );
-	#		}
-	#	}
+	# Make sure the mac address has a correct format
+	validate_mac_address( $stab, $macaddr );
 
 	my $new = {
 		device_id              => $devid,
@@ -2416,6 +2687,7 @@ sub add_interfaces {
 		physical_port_id       => $ppid,
 		should_manage          => $shldmng,
 		should_monitor         => $shldmon,
+		DESCRIPTION            => $desc,
 	};
 
 	my $numchanges = 0;
@@ -2457,20 +2729,24 @@ sub add_interfaces {
 		}
 	}
 
-	if ( defined($dns) && defined($dnsdomid) ) {
+	if ( defined($dns) && defined($dnsdom_ui) ) {
 		my $type = 'A';
 		$type = 'AAAA' if ( $stab->validate_ip($ip) == 6 );
 		$stab->add_dns_record(
 			{
 				dns_name      => $dns,
-				dns_domain_id => $dnsdomid,
+				dns_domain_id => $dnsdom_ui,
 				dns_type      => $type,
 				dns_class     => 'IN',
 				netblock_id   => $nblk->{ _dbx('NETBLOCK_ID') },
+				SHOULD_GENERATE_PTR => $dnsptr_ui,
 			}
 		);
 		$numchanges++;
 	}
+
+	# Update purposes
+	$numchanges += manipulate_network_interface_purpose( $stab, $netintid, $devid, 'new' );
 
 	#
 	# [XXX] - adjust DNS to match rules if primary/mgmt were set to y,
@@ -2584,50 +2860,6 @@ sub delete_device_phys_ports {
 
 	$sth2->finish;
 	1;
-}
-
-# this can probably die since retirement is in a stored procedure now
-sub delete_device_interfaces {
-	my ( $stab, $devid ) = @_;
-
-	my (@netblocks);
-	my $nbq = qq{
-		select	netblock_id from network_interface_netblock
-					where device_id = ?
-	};
-	my $Nsth = $stab->prepare($nbq) || $stab->return_db_err;
-	$Nsth->execute($devid) || $stab->return_db_err($Nsth);
-	while ( my ($nbid) = $Nsth->fetchrow_array ) {
-		push( @netblocks, $nbid );
-	}
-	$Nsth->finish;
-
-	my @qs = (
-		qq{delete from dns_record
-			where netblock_id in
-					(select netblock_id from network_interface_netblock
-						where device_id = ?
-					)
-		},
-		qq{delete from network_interface_purpose
-					where device_id = ?
-		},
-		qq{delete from network_interface_netblock
-					where device_id = ?
-		},
-		qq{delete from network_interface
-					where device_id = ?
-		},
-	);
-
-	foreach my $q (@qs) {
-		my $sth = $stab->prepare($q) || $stab->return_db_err;
-		$sth->execute($devid) || $stab->return_db_err($sth);
-	}
-
-	foreach my $nbid (@netblocks) {
-		$stab->delete_netblock($nbid);
-	}
 }
 
 sub delete_device_power {

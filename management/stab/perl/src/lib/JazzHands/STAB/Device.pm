@@ -64,6 +64,8 @@ our @ISA = qw( );
 
 our $VERSION = '1.0.0';
 
+our $TMPF;
+
 ##############################################################################
 #
 # Device Notes
@@ -1528,7 +1530,7 @@ sub build_existing_route_box {
 	my $cgi = $self->cgi || die "Could not create cgi";
 
 	my $del     = $cgi->b("ADD");
-	my $intname = "";
+	my $int_name = "";
 	if ($hr) {
 		my $id = $hr->{ _dbx('STATIC_ROUTE_ID') };
 		$del = $cgi->hidden(
@@ -1538,7 +1540,7 @@ sub build_existing_route_box {
 		  . $self->build_checkbox( $hr, "", 'rm_STATIC_ROUTE_ID',
 			'STATIC_ROUTE_ID' );
 
-		$intname = $cgi->td(
+		$int_name = $cgi->td(
 			{
 				-name => 'DEST_INT_' . $hr->{ _dbx('STATIC_ROUTE_ID') }
 			},
@@ -1560,7 +1562,7 @@ sub build_existing_route_box {
 		$cgi->td(
 			$self->b_textfield( $hr, "ROUTE_DEST_IP", 'STATIC_ROUTE_ID' ),
 		),
-		$intname,
+		$int_name,
 	);
 }
 
@@ -1653,32 +1655,16 @@ sub get_device_netblock_routes {
 sub dump_interfaces {
 	my ( $self, $devid ) = @_;
 
-	open( TMPF, '>', '/tmp/test' );
-	use Data::Dumper;
+	use IO::Handle;
+	open( $TMPF, '>', '/tmp/test' );
+	$TMPF->autoflush;
+
+	print $TMPF Dumper( %{$self->cgi}{'param'} );
 
 	my $dbh = $self->dbh || die "Could not create dbh";
 	my $cgi = $self->cgi || die "Could not create cgi";
 
-	#my $img;
-
-	#my $collapse = $cgi->param('collapse') || 'no';
-	#if ( $collapse eq 'yes' ) {
-	#	my $n = new CGI($cgi);
-	#	$n->param( 'collapse', 'no' );
-	#	$img = $cgi->a( { -href => $n->self_url },
-	#		$cgi->img( { -src => "../stabcons/collapse.jpg" } ) );
-	#} else {
-	#	my $n = new CGI($cgi);
-	#	$n->param( 'collapse', 'yes' );
-	#	$img = $cgi->a( { -href => $n->self_url },
-	#		$cgi->img( { -src => "../stabcons/expand.jpg" } ) );
-	#}
-
-	#$collapse = 'yes';    # [XXX] need to figure out how to do the
-	#$img      = '';       # [XXX] collapsing better w/ the tabs!
-
 	my $rv =
-	  #$cgi->h3( { -align => 'center' }, $img, "Layer 3 Interfaces", $img );
 	  $cgi->h3( { -align => 'center' }, "Layer 3 Interfaces" );
 
 	my $q = qq{
@@ -1708,7 +1694,7 @@ sub dump_interfaces {
 				nb.parent_netblock_id = pnb.netblock_id
 		where ni.device_id = ?
 		order by ni.network_interface_name, ni.network_interface_id, IP,
-			dns.should_generate_ptr desc
+			dns.should_generate_ptr desc, dns.dns_name
 	};
 
 	my $sth = $self->prepare($q) || $self->return_db_err($dbh);
@@ -1716,34 +1702,29 @@ sub dump_interfaces {
 
 	# Process each record and aggregate ip addresses and dns record
 
-	my @aInterfaces;		# Array to store interfaces as hashes
-	my %hInterface;			# Interface hash
-	my %hIpAddress;			# IP address hash
+	my @aInterfaces;				# Array to store interfaces as hashes
+	my %hInterface;					# Interface hash
+	my %hIpAddress;					# IP address hash
 
-	my $last_interface_id = -1;	# Id of the interface processed in the last loop iteration
+	my $last_interface_id = -1;		# Id of the interface processed in the last loop iteration
 	my $last_ip_address = 'xxx';	# Value of the ip address processed in the last loop iteration
-	my %dns;			# DNS info hash
+	my %dns;						# DNS info hash
 	my $first = 1;
 
 	while ( my ($values) = $sth->fetchrow_hashref ) {
-print TMPF "----------------------------------\n";
 		last if ( !defined($values) );
-print TMPF Dumper(\$values);
 		# Build a hash of the dns properties
 		if( $values->{ 'dns_record_id' } ) {
 			%dns = (
-				'dns_record_id'		=> $values->{ 'dns_record_id' },
-				'dns_name'		=> $values->{ 'dns_name' },
-				'dns_domain_id'		=> $values->{ 'dns_domain_id' },
-				'soa_name'		=> $values->{ 'soa_name'},
+				'dns_record_id'			=> $values->{ 'dns_record_id' },
+				'dns_name'				=> $values->{ 'dns_name' },
+				'dns_domain_id'			=> $values->{ 'dns_domain_id' },
+				'soa_name'				=> $values->{ 'soa_name'},
 				'should_generate_ptr'	=> $values->{ 'should_generate_ptr'},
 			);
 		} else {
 			%dns = ();
 		}
-
-print TMPF 'last ip:'.$last_ip_address."\n";
-print TMPF 'new ip :'.$values->{ _dbx('IP') }."\n";
 
 		# If it's the first interface, just populate it from the record
 		if ( $first == 1 ) {
@@ -1764,20 +1745,20 @@ print TMPF 'new ip :'.$values->{ _dbx('IP') }."\n";
 			# If the interface has changed or if the ip address has changed
 			if ( ( $last_interface_id != $values->{ _dbx('NETWORK_INTERFACE_ID') } ) or
 			     ( $last_ip_address ne $values->{ _dbx('IP') } ) ) {
-print TMPF "IF or IP changed - dumping ip\n";
-print TMPF Dumper( \%hIpAddress );
-				push( @{$hInterface{'ip_addresses'}}, {%hIpAddress} );
+				if( %hIpAddress ) {
+					push( @{$hInterface{'ip_addresses'}}, {%hIpAddress} );
+				}
 				# Empty and populate the current ip address with the new record data
 				%hIpAddress = ();
-				$hIpAddress{ 'network_interface_id' } = $values->{ _dbx('network_interface_id') };
-				$hIpAddress{ 'netblock_id' } = $values->{ _dbx('netblock_id') };
-				$hIpAddress{ 'ip' } = $values->{ _dbx('IP') };
+				if( $values->{ _dbx('IP') } ) {
+					$hIpAddress{ 'network_interface_id' } = $values->{ _dbx('network_interface_id') };
+					$hIpAddress{ 'netblock_id' } = $values->{ _dbx('netblock_id') };
+					$hIpAddress{ 'ip' } = $values->{ _dbx('IP') };
+				}
 			}
 
 			# If the interface has changed, save it for later processing
 			if ( $last_interface_id != $values->{ _dbx('NETWORK_INTERFACE_ID') } ) {
-print TMPF "IF changed - dumping interface\n";
-print TMPF Dumper( \%hInterface );
 				push( @aInterfaces, {%hInterface} );
 				# Empty and populate the current interface with the new record data
 				%hInterface = ();
@@ -1790,8 +1771,6 @@ print TMPF Dumper( \%hInterface );
 		# Add the dns record hash to the current ip
 		if ( $values->{ 'dns_record_id' } ) {
 			push( @{$hIpAddress{ 'dns_records' }} , {%dns} );
-print TMPF "dns added - dumping ip\n";
-print TMPF Dumper( \%hIpAddress );
 		}
 
 		$last_interface_id = $values->{ _dbx('NETWORK_INTERFACE_ID') };
@@ -1799,44 +1778,39 @@ print TMPF Dumper( \%hIpAddress );
 	}
 
 	# Save the last interface
-	push( @{$hInterface{'ip_addresses'}}, {%hIpAddress} );
+	if( %hIpAddress ) {
+		push( @{$hInterface{'ip_addresses'}}, {%hIpAddress} );
+	}
 	push( @aInterfaces, {%hInterface} );
-
-	#foreach my $i (@aInterfaces) {
-	#	print TMPF Dumper($i);
-	#}
-
-print TMPF Dumper( \@aInterfaces );
 
 	# Loop on preprocessed interfaces
 	foreach my $hrInterface ( @aInterfaces ) {
-		#if ( $collapse eq 'yes' ) {
-			$rv .= $self->build_collapsed_if_box( $hrInterface, $devid );
-		#} else {
-		#	$rv .= $self->build_interface_box( $hrInterface, $devid );
-		#}
+		print $TMPF localtime()." - Processing interface\n";
+		$rv .= $self->build_network_interface_box( $hrInterface, $devid );
 	}
 
-	#if ( $collapse eq 'yes' ) {
-		my $collist = [ '', 'Name', 'Mac', 'Type', 'IP', 'DNS', 'More' ];
-		$rv = $cgi->table(
-			{ -class => 'interfacetable' },
-			$cgi->th($collist),
-			$rv,
-			$cgi->Tr(
-				{ -class => 'intableheader' },
-				$cgi->td( { -colspan => $#{$collist} + 1 }, "Add Interface" )
-			),
-			$self->build_collapsed_if_box( undef, $devid )
-		);
-	#} else {
-	#	$rv .= $self->build_interface_box( undef, $devid );
-	#}
+    # Define the table column headers
+	my $collist = [ '', 'Name', 'Type', 'MAC Address', 'IP Addresses', 'DNS Records<span style="float:right">PTR</span>', '' ];
+	$rv = $cgi->table(
+		{ -class => 'interfacetable' },
+		$cgi->th($collist),
+		$rv,
+		$cgi->Tr(
+			{ -class => 'header_add_item' },
+			$cgi->td( { -colspan => $#{$collist} + 1 }, "Add Interface" )
+		),
+		$self->build_network_interface_box( undef, $devid ),
+	);
 
-	close( TMPF );
+	close( $TMPF );
 
 	$sth->finish;
-	$rv .= "\n";
+
+	# Add some notes at the bottom of the page
+	$rv .= "<br/><div align=center><u>Notes</u><div align=left style='margin: auto; width: 80%;'><ul>\n";
+	$rv .= "<li>Unlinking IP addresses will disassociate them from their network interface but leave them in the database with their DNS records.</li>\n";
+	$rv .= "<li>Locking DNS records will keep them associated to the original IP Address when it's updated</li>\n";
+	$rv .= "</ul></div></div>\n";
 	$rv;
 }
 
@@ -1853,6 +1827,8 @@ sub build_network_interface_purpose_table($$) {
 
 	if ( defined( $values->{ _dbx('network_interface_id') } ) ) {
 		$name .= "_" . $values->{ _dbx('network_interface_id') };
+	} else {
+		$name .= '_new';
 	}
 
 	my $cgi = $self->cgi || die "Could not create cgi";
@@ -1885,243 +1861,386 @@ sub build_network_interface_purpose_table($$) {
 		-values   => \@options,
 		-default  => \@set,
 		-labels   => \%labels,
-		-size     => 4,
-		-multiple => 'true'
+		-size     => scalar keys %labels, # We have only 4 different values for now
+		-multiple => 'true',
+		-class    => 'tracked',
+		-original => join( ',', @set ),
 	);
 }
 
-sub build_collapsed_if_box {
+# This function displays one interface and all its dependencies (netblocks, dns records, ...)
+sub build_network_interface_box {
 	my ( $self, $values, $devid ) = @_;
 
 	#my $dbh = $self->dbh || die "Could not create dbh";
 	my $cgi = $self->cgi || die "Could not create cgi";
 
-	my $netintid = '';
+	# Default state of the more table checkboxes (unchecked)
 	my $defchecked = undef;
-	my $action_url    = "write/update_interface.pl";
-	my $hidden        = "";
-	my $rowitems = {};
-	my $delbox = "";
-
-	if ( !defined($values) ) {
-		$rowitems->{'class'} = "intadd";
+	# Default network interface
+	my $iNetworkInterfaceId = 'new';
+	# Is this a new interface?
+	if ( !defined( $values->{ 'network_interface_id' } ) ) {
+		# More table heckboxes are selected by default for new interfaces
 		$defchecked          = 'on';
-		$action_url          = "write/add_interface.pl";
-		$hidden              = $cgi->hidden(
-			-name    => 'DEVICE_ID',
-			-default => $devid
-		);
+	# No, we have a valid network interface passed as parameter
 	} else {
-		$netintid = $values->{ _dbx('NETWORK_INTERFACE_ID') };
-		$hidden = $cgi->hidden(
-			-class => 'recordid',
-			-name  => 'NETWORK_INTERFACE_ID_'
-			  . $netintid,
-			-id => 'NETWORK_INTERFACE_ID_'
-			  . $netintid,
-			-default => $netintid
-		);
-		#$delbox = $self->build_checkbox( $values, "",
-		#	"rm_NETWORK_INTERFACE", 'NETWORK_INTERFACE_ID' );
-
-		$delbox = $cgi->checkbox(
-			{
-				-class => 'irrelevant rmrow',
-				-name  => 'chk_RM_NETWORK_INTERFACE_'.$netintid,
-				-label => '',
-				-alt   => "Delete this Record",
-				-title => 'Delete This Record',
-			}
-		)
-		.$cgi->a(
-			{ -class => 'rmrow' },
-			$cgi->img(
-				{
-				-src   => "../stabcons/redx.jpg",
-				-alt   => "Delete this Network Interface",
-				-title => 'Delete This Network Interface',
-				-class => 'rmdnsrow button',
-				}
-			)
-		);
+		$iNetworkInterfaceId = $values->{ 'network_interface_id' };
 	}
+
+	# Define a CSS class for all elements related to the network interface
+	# This is used to mark them red for deletion
+	my $strClassNetworkInterfaceId = 'id_network_interface_'.$iNetworkInterfaceId;
+
+	my $strHiddenNetworkInterface = $cgi->input(
+		{
+			-type		=> 'hidden',
+			-id			=> 'NETWORK_INTERFACE_ID_'.$iNetworkInterfaceId,
+			-name		=> 'NETWORK_INTERFACE_ID_'.$iNetworkInterfaceId,
+			-value		=> 'NETWORK_INTERFACE_ID_'.$iNetworkInterfaceId,
+		}
+	);
+
+	my $strNetIntButtonState = $self->cgi_parse_param( 'NETWORK_INTERFACE_TOGGLE_'.$iNetworkInterfaceId );
+	$strNetIntButtonState = $strNetIntButtonState eq '' ? 'update' : $strNetIntButtonState;
+	my $strNetIntButton = $cgi->button(
+		{
+			-type    => 'button',
+			-class   => "button_switch parent_level_none level_network_interface $strClassNetworkInterfaceId",
+			-id      => 'NETWORK_INTERFACE_TOGGLE_'.$iNetworkInterfaceId,
+			-name    => 'NETWORK_INTERFACE_TOGGLE_'.$iNetworkInterfaceId,
+			-title   => 'Switch between update and delete modes for this Network Interface',
+			-state   => $strNetIntButtonState,
+			-label   => $strNetIntButtonState,
+			-onclick => "updateNetworkInterfaceUI( this );",
+		},
+		$strNetIntButtonState
+	);
+	my $strNewNetIntButtonState = $self->cgi_parse_param( 'NETWORK_INTERFACE_TOGGLE_'.$iNetworkInterfaceId );
+	$strNewNetIntButtonState = $strNewNetIntButtonState eq '' ? 'update' : $strNewNetIntButtonState;
+	my $strNewNetIntButton = $cgi->button(
+		{
+			-type    => 'button',
+			-class   => "button_switch parent_level_none level_network_interface $strClassNetworkInterfaceId",
+			-id      => 'NETWORK_INTERFACE_TOGGLE_new',
+			-name    => 'NETWORK_INTERFACE_TOGGLE_new',
+			-title   => '',
+			-state   => $strNewNetIntButtonState,
+			-label   => 'new',
+		},
+		'new'
+	);
 
 	my $pk      = "NETWORK_INTERFACE_ID";
-	my $intname = $self->b_textfield( { -textfield_width => 10 },
-		$values, 'NETWORK_INTERFACE_NAME', $pk );
-
-	if ( defined( $values->{ _dbx('SECONDARY_NETBLOCK_ID') } ) ) {
-		my @pk = ( 'NETWORK_INTERFACE_ID', 'SECONDARY_NETBLOCK_ID' );
-		$pk = \@pk;
-	}
-
-	my $netintpurp =
-	  $self->build_network_interface_purpose_table( $values, $devid );
-
-	my $more_do_not_free_checkbox = '';
-
-	# Build a table for Extras
-	if ( length($delbox) ) {
-		$more_do_not_free_checkbox = $cgi->td(
-			{
-				-class => 'intmoretd',
-			},
-			$self->build_checkbox(
-				$values,                  "Do Not Free IPs on Removal",
-				'rm_NET_INT_preserveips', 'NETWORK_INTERFACE_ID'
-			)
-		);
-	}
-
-	my $more_table = $cgi->table(
-		{ -class => "intmoretable" },
-		$self->build_tr(
-			{},            $values,
-			"b_textfield", "Description",
-			'DESCRIPTION', 'NETWORK_INTERFACE_ID'
-		)
-		. $cgi->Tr(
-			{ -class => 'intmoretr' },
-			$cgi->td(
-				{
-					-rowspan => 4,
-				},
-				$cgi->b("Select Purpose:").$cgi->br(), $netintpurp )
-			. $cgi->td(
-				{
-					-class => 'intmoretd',
-				},
-				$self->build_checkbox(
-					$values,           "Up",
-					'IS_INTERFACE_UP', 'NETWORK_INTERFACE_ID',
-					$defchecked
-				)
-			)
-		)
-		. $cgi->Tr(
-			{ -class => 'intmoretr' },
-			$cgi->td(
-				{
-					-class => 'intmoretd',
-				},
-				$self->build_checkbox(
-					$values,         "Should Manage",
-					'SHOULD_MANAGE', 'NETWORK_INTERFACE_ID',
-					$defchecked
-				)
-			)
-		)
-		. $cgi->Tr(
-			{ -class => 'intmoretr' },
-			$cgi->td(
-				{
-					-class => 'intmoretd',
-				},
-				$self->build_checkbox(
-					$values,          "Should Monitor",
-					'SHOULD_MONITOR', 'NETWORK_INTERFACE_ID',
-					$defchecked
-				)
-			)
-		)
-		. $cgi->Tr(
-			{ -class => 'intmoretr' },
-			$more_do_not_free_checkbox
-		),
+	my $strNetworkInterfaceName = $self->b_textfield(
+		{
+			-class           => "tracked parent_level_none level_network_interface $strClassNetworkInterfaceId",
+			-textfield_width => 10,
+			-original        => ( $iNetworkInterfaceId eq 'new' or ! defined( $values->{ _dbx('NETWORK_INTERFACE_NAME') } ) ) ? '' : $values->{ _dbx('NETWORK_INTERFACE_NAME') },
+		},
+		$values,
+		'NETWORK_INTERFACE_NAME',
+		$pk
 	);
+
+    my $strNetworkInterfaceType = $self->b_dropdown(
+		{
+			-class    => "tracked parent_level_none level_network_interface $strClassNetworkInterfaceId",
+			-original => ( $iNetworkInterfaceId eq 'new' or ! defined( $values->{ _dbx('NETWORK_INTERFACE_TYPE') } ) ) ? '__unknown__' : $values->{ _dbx('NETWORK_INTERFACE_TYPE') },
+		},
+		$values,
+		'NETWORK_INTERFACE_TYPE',
+		$pk
+	);
+
+	my $strNetworkInterfaceMAC = $self->b_textfield(
+		{
+			-class    => "tracked parent_level_none level_network_interface $strClassNetworkInterfaceId",
+			-original => ( $iNetworkInterfaceId eq 'new' or ! defined( $values->{ _dbx('MAC_ADDR') } ) ) ? '' : $values->{ _dbx('MAC_ADDR') },
+		},
+		$values,
+		'MAC_ADDR',
+		$pk
+	);
+
+	# The More table for the network interface
+	my $strTableMore = $cgi->Tr(
+		{
+			-name  => 'more_expand_content_'.$iNetworkInterfaceId,
+			-class => 'irrelevant',
+			-style => 'border-top: 1px solid gray',
+		},
+		$cgi->th(),	
+		$cgi->th(
+			'<br/><b>Up</b><br/>',
+			$self->build_checkbox(
+				{
+					-class    => "tracked $strClassNetworkInterfaceId",
+					-original => ( $iNetworkInterfaceId eq 'new' or $values->{ _dbx('IS_INTERFACE_UP') } eq 'Y' ) ? 'checked' : '',
+				},
+				$values,
+				"",
+				'IS_INTERFACE_UP',
+				'NETWORK_INTERFACE_ID',
+				$defchecked
+			)
+		),
+		$cgi->th(
+			'<b>Should<br/>Manage</b><br/>',
+			$self->build_checkbox(
+				{ 
+					-class    => 'tracked',
+					-original => ( $iNetworkInterfaceId eq 'new' or $values->{ _dbx('SHOULD_MANAGE') } eq 'Y' ) ? 'checked' : '',
+				},
+				$values,
+				"",
+				'SHOULD_MANAGE',
+				'NETWORK_INTERFACE_ID',
+				$defchecked
+			)
+		),
+		$cgi->th(
+			'<b>Should<br/>Monitor</b><br/>',
+			$self->build_checkbox(
+				{
+					-class    => 'tracked',
+					-original => ( $iNetworkInterfaceId eq 'new' or $values->{ _dbx('SHOULD_MONITOR') } eq 'Y' ) ? 'checked' : '',
+				},
+				$values,
+				"",
+				'SHOULD_MONITOR',
+				'NETWORK_INTERFACE_ID',
+				$defchecked
+			)
+		),
+		$cgi->th(
+			'<b>Select Purpose</b><br/>',
+			$self->build_network_interface_purpose_table( $values, $devid )
+		),
+		$cgi->th(
+			'<b>Description</b><br/>',
+			$cgi->textarea(
+				{
+					-id       => "NETWORK_INTERFACE_DESCRIPTION_$iNetworkInterfaceId",
+					-name     => "NETWORK_INTERFACE_DESCRIPTION_$iNetworkInterfaceId",
+					-class    => "tracked $strClassNetworkInterfaceId",
+					-rows     => 4,
+					-columns  => 60,
+					-original => $values->{ _dbx('DESCRIPTION') },
+					-default  => $values->{ _dbx('DESCRIPTION') },
+				},
+				$values->{ _dbx('DESCRIPTION') },
+			)
+		),
+		$cgi->th()
+	);
+
+	# Count the netblocks passed as parameters for this network interface
+	my $iNumNetblocks = exists( $values->{'ip_addresses'} ) ? scalar( @{$values->{'ip_addresses'}} ) : 0;
+
+	# The number of lines in the tables is the number of netblocks + one line for the new ip template
+	my $iRowSpan = $iNumNetblocks+1;
 
 	# Make the extras something that can be clicked on and expanded
-	my $more_td = $cgi->td( { -class => 'more_expand_td_'.$netintid }, '<div id="more_expand_control_'.$netintid.'" onclick="showhide( this );" class="control_collapsed">&#9650;</div>' );
-
-	my $add_ip = $cgi->span(
+	my $strTdMoreExpand = $cgi->td(
 		{
-			-alt   => 'Add IP address',
-			-title => 'Add IP address',
-			-class => 'addipaddr plusbutton'
-		}, '&#10010;'
+			-rowspan => $iRowSpan,
+			-class => 'more_expand_td_'.$iNetworkInterfaceId
+		},
+		'<span title="Show/hide more options" id="more_expand_control_'.$iNetworkInterfaceId.'" class=toggle_container onclick="showhide( this );"><span class=toggle_switch></span></span>',
 	);
 
-	my $rv = $cgi->Tr(
-		$rowitems,
-		$cgi->td( $hidden, $delbox ),
-		$cgi->td( $intname ),
-		$cgi->td( $self->b_dropdown( $values, 'NETWORK_INTERFACE_TYPE', $pk ) ),
-		$cgi->td( $self->b_textfield( $values, "MAC_ADDR", $pk ) ),
-		$cgi->td( { -colspan => 2 }, $add_ip ),
-		$more_td,
-	).$cgi->Tr(
-		$cgi->td( { -id => 'more_expand_content_'.$netintid, -class => 'irrelevant', -colspan => 7 }, $more_table )
-	);
+	# Loop on netblocks (ip addresses)
+	# And iterate once more at the end for the new ip template
+	my $strNetworkInterface;
 
-	# $self->textfield_sizing(1);
-	$rv.$self->build_ip_box( $values->{'ip_addresses'}, $devid, $netintid );
-}
+	foreach my $i (0..( $iNumNetblocks ) ) {
 
-# This procedure builds what's needed to display the ip part of an interface row
-sub build_ip_box {
-	my ( $self, $ip_addresses, $devid, $netintid ) = @_;
+		# Get the supplied ip address for the current netblock
+		my $hIPAddress = {};
+		my $iNetblockId;
+		# For all existing netblocks...
+		if( $i < $iNumNetblocks ) {
+			$hIPAddress = @{$values->{'ip_addresses'}}[$i];
+			$iNetblockId = $hIPAddress->{ 'netblock_id' };
+		# ... and for the last iteration of the loop applying to the new ip addition template
+		} else {
+			$hIPAddress->{ 'network_interface_id' } = $iNetworkInterfaceId;
+			$hIPAddress->{ 'netblock_id' } = 'new';
+			$hIPAddress->{'ip'} = '';
+			$iNetblockId = 'new';
+		}
 
-	my $cgi = $self->cgi || die "Could not create cgi";
+		my $strClassNetblockId = 'id_netblock_'.$iNetblockId;
 
-	my $ipbox;
-
-	# Loop on ip addresses
-	foreach my $ip_address ( @{$ip_addresses} ) {
-		$ipbox .= $cgi->Tr(
-			$cgi->td( { -colspan => 4 } ),
-			$cgi->td( $self->b_textfield( $ip_address, 'ip', [ 'network_interface_id', 'netblock_id' ] ) ),
-			$cgi->td( $self->build_dns_box( $ip_address->{'dns_records'}, $devid, $netintid ) ),
-			$cgi->td( { -colspan => 1 } )
+		# Prepare netblock related elements - delete button, ip and dns fields
+		my $strNetblockButtonState = $self->cgi_parse_param( 'NETBLOCK_TOGGLE_'.$iNetworkInterfaceId.'_'.$iNetblockId );
+		$strNetblockButtonState = $strNetblockButtonState eq '' ? 'update' : $strNetblockButtonState;
+		my $strNetblockButton = $cgi->button(
+			{
+				-type    => 'button',
+				-class   => "button_switch parent_level_network_interface level_netblock $strClassNetworkInterfaceId $strClassNetblockId",
+				-id      => 'NETBLOCK_TOGGLE_'.$iNetworkInterfaceId.'_'.$iNetblockId,
+				-name    => 'NETBLOCK_TOGGLE_'.$iNetworkInterfaceId.'_'.$iNetblockId,
+				-title   => 'Switch between update, unlink (disassociate IP address from network interface without deleting it) and delete modes for this IP address',
+				-state   => $strNetblockButtonState,
+				-label   => $strNetblockButtonState,
+				-onclick => "updateNetworkInterfaceUI( this );",
+			},
+			$strNetblockButtonState
 		);
+		my $strNewNetblockButtonState = $self->cgi_parse_param( 'NETBLOCK_TOGGLE_'.$iNetworkInterfaceId.'_'.$iNetblockId );
+		$strNewNetblockButtonState = $strNewNetblockButtonState eq '' ? 'update' : $strNewNetblockButtonState;
+		my $strNewNetblockButton = $cgi->button(
+			{
+				-type    => 'button',
+				-class   => "button_switch parent_level_network_interface level_netblock $strClassNetworkInterfaceId $strClassNetblockId",
+				-id      => 'NETBLOCK_TOGGLE_'.$iNetworkInterfaceId.'_'.$iNetblockId,
+				-name    => 'NETBLOCK_TOGGLE_'.$iNetworkInterfaceId.'_'.$iNetblockId,
+				-title   => '',
+				-state   => $strNewNetblockButtonState,
+				-label   => 'new',
+			},
+			'new'
+		);
+		my $strIP = $self->b_textfield(
+			{
+				-type            => 'text',
+				-class           => "tracked parent_level_network_interface level_netblock $strClassNetworkInterfaceId $strClassNetblockId",
+				-placeholder     => ( $iNetblockId eq 'new' ) ? 'Enter new IP address' : 'Use button to delete IP',
+				-textfield_width => 25,
+				-original        => $hIPAddress->{'ip'},
+			},
+			$hIPAddress,
+			'ip',
+			[ 'network_interface_id', 'netblock_id' ]
+		);
+		my $strDNS = $self->build_dns_box( $hIPAddress->{'dns_records'}, $devid, $iNetworkInterfaceId, $iNetblockId, $hIPAddress->{'ip'} );
+
+		# This is the first netblock line in the table, and we do have at least one associated netblock to display
+		if( $i == 0 && $iNumNetblocks > 0 ) {
+			$strNetworkInterface .= $cgi->Tr(
+				{ -class => $strClassNetworkInterfaceId.' network_interface_first_line', },
+				$cgi->td( { -rowspan => $iRowSpan }, $strHiddenNetworkInterface.$strNetIntButton ),
+				$cgi->td( { -rowspan => $iRowSpan }, $strNetworkInterfaceName ),
+				$cgi->td( { -rowspan => $iRowSpan }, $strNetworkInterfaceType ),
+				$cgi->td( { -rowspan => $iRowSpan }, $strNetworkInterfaceMAC ),
+				$cgi->td( { -class => $strClassNetblockId }, $strNetblockButton.$strIP ),
+				$cgi->td( { -class => $strClassNetblockId }, $strDNS ),
+				$strTdMoreExpand
+			);
+		# This is the first netblock line in the table, but we have no associated netblock to display, so that's the template to add a new ip address
+		} elsif( $i == 0 && $iNumNetblocks == 0 ) {
+			# Set intadd class if it's the template to add a new network interface
+			my $tr_int_class = 'network_interface_first_line';
+			$strNetworkInterface .= $cgi->Tr(
+				{ -class => $strClassNetworkInterfaceId.' '.$tr_int_class, },
+				# Note: delete button is not added for new interfaces
+				$cgi->td( { -rowspan => $iRowSpan, title => 'Add new interface', alt => 'Add new interface' }, $strHiddenNetworkInterface.(($iNetworkInterfaceId ne 'new')?$strNetIntButton:$strNewNetIntButton) ),
+				$cgi->td( { -rowspan => $iRowSpan }, $strNetworkInterfaceName ),
+				$cgi->td( { -rowspan => $iRowSpan }, $strNetworkInterfaceType ),
+				$cgi->td( { -rowspan => $iRowSpan }, $strNetworkInterfaceMAC ),
+				$cgi->td( { -class => $strClassNetblockId }, $strNewNetblockButton.$strIP ),
+				$cgi->td( { -class => $strClassNetblockId }, $strDNS ),
+				$strTdMoreExpand
+			);
+		# This is the first line coming just after the last associated netblock has been displayed, so that's the template to add an up address
+		} elsif( $i == $iNumNetblocks ) {
+			$strNetworkInterface .= $cgi->Tr(
+				{ -class => $strClassNetworkInterfaceId },
+				$cgi->td( { -class => $strClassNetblockId }, $strNewNetblockButton.$strIP ),
+				$cgi->td( { -class => $strClassNetblockId }, $strDNS ),
+			);
+		# This is any line of the table with an associated netblock except the first one handled above
+		} elsif( $i < $iNumNetblocks ) {
+			$strNetworkInterface .= $cgi->Tr(
+				{ -class => $strClassNetworkInterfaceId },
+				$cgi->td( { -class => $strClassNetblockId }, $strNetblockButton.$strIP ),
+				$cgi->td( { -class => $strClassNetblockId }, $strDNS ),
+			);
+
+		}
 	}
 
-	$ipbox;
+	# Add the More table below its interface as a new table line
+	$strNetworkInterface .= $strTableMore;
+	# And add a separator
+	$strNetworkInterface .= $cgi->Tr(
+		$cgi->td( { -class => 'horizontal_separator', -colspan => 7 }, '' )
+	);
+
+	$strNetworkInterface;
 }
 
 # This procedure builds what's needed to display the dns part of an ip address row
 sub build_dns_box {
-	my ( $self, $dns_records, $devid, $netintid ) = @_;
+	my ( $self, $dns_records, $devid, $iNetworkInterfaceId, $iNetblockId, $strIP ) = @_;
 
 	my $cgi = $self->cgi || die "Could not create cgi";
 
 	my $dnsbox = '';
 	my $dnsline = '';
-	my $dnsid = 'new';
+	my $strClassNetworkInterfaceId = 'id_network_interface_'.$iNetworkInterfaceId;
+	my $strClassNetblockId = 'id_netblock_'.$iNetblockId;
+	my $strClassDnsRecordId = '';
 
-	# If there is a DNS record - or more - associated to this interface ip
-	# Display it in non editable mode for security
-	#
+	my $strNewDnsButton = '';
+
+	# Do we have at least one DNS record for the netblock?
 	if ( $dns_records && scalar @{$dns_records} > 0 ) {
 
 		# Loop on dns records
 		foreach my $dns_record ( @{$dns_records} ) {
 
-			$dnsid = $dns_record->{ 'dns_record_id' };
+			my $dns_record_id = $dns_record->{ 'dns_record_id' };
+			$strClassDnsRecordId = 'id_dns_record_'.$dns_record_id;
 
 			my $dot = "";
 			if ( $dns_record->{ 'dns_name' } ) {
 				$dot = ".";
 			}
 
-			my $is_ptr;
-			if( $dns_record->{ 'should_generate_ptr' } eq 'Y' ) {
-				$is_ptr = 'PTR ';
+			# Populate the dns domain dropdown with the previous value after a failed update
+			my @dns_domain_id_values = ( $dns_record->{'dns_domain_id'}, '-1' );
+			my %dns_domain_id_labels = ( $dns_record->{'dns_domain_id'} => $dns_record->{'soa_name'}, '-1' => '--Unset--' );
+			my $dns_domain_id_new = $self->cgi_parse_param( 'DNS_DOMAIN_ID_' . $iNetworkInterfaceId.'_'.$iNetblockId.'_'.$dns_record_id );
+
+			# Do we have a previous value?
+			if( defined( $dns_domain_id_new ) and $dns_domain_id_new ne '' and $dns_domain_id_new ne '-1' and $dns_domain_id_new ne $dns_record->{'dns_domain_id'} ) {
+				# Get the domain name corresponding to the id from the database
+				my $sth = $self->prepare(
+					qq{ select soa_name from dns_domain where dns_domain_id = ? }
+				) || $self->return_db_err;
+				$sth->execute( $dns_domain_id_new ) || $self->return_db_err;
+				my ( $dns_domain_name_new ) = $sth->fetchrow_array;
+				# Do we have a valid and non empty result?
+				if( defined( $dns_domain_name_new ) and $dns_domain_name_new ne '' ) {
+					# Add the domain id to the values
+					push @dns_domain_id_values, $dns_domain_id_new;
+					# And add the domain (id,name) keypair to the labels
+					$dns_domain_id_labels{$dns_domain_id_new} = $dns_domain_name_new;
+				}
 			}
 
 			my $dns_text_name = $cgi->textfield(
 				{
-					-type     => 'text',
-					-class    => 'irrelevant dnsname',
-					-name     => 'DNS_NAME_' . $netintid,
-					-value    => $dns_record->{ 'dns_name' },
-					-disabled => 1,
+					-type        => 'text',
+					-class       => "tracked dnsname parent_level_netblock level_dns_record $strClassNetworkInterfaceId $strClassNetblockId $strClassDnsRecordId",
+					-name        => 'DNS_NAME_' . $iNetworkInterfaceId.'_'.$iNetblockId.'_'.$dns_record_id,
+					-value       => $dns_record->{ 'dns_name' },
+					-original    => $dns_record->{ 'dns_name' },
+					-placeholder => "DNS name can't be empty",
 				}
 			);
-
+			
 			my $dns_dropdown_domainid = $cgi->popup_menu(
 				{
-					-name  => 'DNS_DOMAIN_ID_' . $netintid,
-					-class => 'irrelevant dnsdomain',
+					-name     => 'DNS_DOMAIN_ID_' . $iNetworkInterfaceId.'_'.$iNetblockId.'_'.$dns_record_id,
+					-class    => "tracked dnsdomain parent_level_netblock level_dns_record $strClassNetworkInterfaceId $strClassNetblockId $strClassDnsRecordId",
+					-values   => \@dns_domain_id_values,
+					-labels   => \%dns_domain_id_labels,
+					-default  => $dns_record->{'dns_domain_id'},
+					-original => $dns_record->{'dns_domain_id'},
 				}
 			);
 
@@ -2131,28 +2250,6 @@ sub build_dns_box {
 					-name     => '',
 					-value    => $dns_record->{ 'dns_domain_id' },
 					-disabled => 1
-				}
-			);
-
-			my $dns_link = $cgi->a(
-				{
-					-class  => 'intdnsedit',
-					-target => "dns_record_id"
-					  . $dns_record->{ 'dns_record_id' },
-					-href => '../dns/?DNS_RECORD_ID='
-					  . $dns_record->{ 'dns_record_id' },
-				},
-				$dns_record->{ 'dns_name' }
-				  . $dot
-				  . $dns_record->{ 'soa_name' },
-			);
-
-			my $dns_img_edit = $cgi->img(
-				{
-					-src   => "../stabcons/e.png",
-					-alt   => "Edit",
-					-title => 'Edit',
-					-class => 'intdnsedit',
 				}
 			);
 
@@ -2169,7 +2266,7 @@ sub build_dns_box {
 				{
 					-class    => 'dnsrecordid',
 					-name     => '',
-					-value    => $dns_record->{ 'dns_record_id' },
+					-value    => $dns_record_id,
 					-disabled => 1
 				}
 			);
@@ -2178,31 +2275,10 @@ sub build_dns_box {
 				{
 					-class	=> 'dnsref',
 					-href	=> 'javascript:void(null)',
-					-style  => 'float: right'
+					-style  => 'display: inline-flex; width: 30px;'
 				},
 				$dns_img_bluearrow
 				. $dns_hidden_recordid
-			);
-
-			my $dns_remove = $cgi->checkbox(
-				{
-					-class => 'irrelevant rmrow',
-					-name  => "Del_" . $dns_record->{ 'dns_record_id' },
-					-label => '',
-					-alt   => "Delete this Record",
-					-title => 'Delete This Record',
-				}
-			)
-			.$cgi->a(
-				{ -class => 'rmrow' },
-				$cgi->img(
-					{
-					-src   => "../stabcons/redx.jpg",
-					-alt   => "Delete this Record",
-					-title => 'Delete This Record',
-					-class => 'rmdnsrow button',
-					}
-				)
 			);
 
 			$dnsline = $cgi->td (
@@ -2211,14 +2287,27 @@ sub build_dns_box {
 				},
 				$cgi->span(
 					{ -class => 'dnsroot' },
-					$dns_remove
-					.$dns_text_name
+					$dns_text_name
 					. $dns_dropdown_domainid
 					. $dns_hidden_domainid
-					. $dns_link
-					.$dns_img_edit
 				)
 				. $dns_link_bluearrow
+			);
+
+			my $strDnsButtonState = $self->cgi_parse_param( 'DNS_TOGGLE_'.$iNetworkInterfaceId.'_'.$iNetblockId.'_'.$dns_record_id );
+			$strDnsButtonState = $strDnsButtonState eq '' ? 'update' : $strDnsButtonState;
+			my $strDnsButton = $cgi->button(
+				{
+					-type    => 'button',
+					-class   => "button_switch parent_level_netblock level_dns_record $strClassNetworkInterfaceId $strClassNetblockId $strClassDnsRecordId",
+					-id      => 'DNS_TOGGLE_'.$iNetworkInterfaceId.'_'.$iNetblockId.'_'.$dns_record_id,
+					-name    => 'DNS_TOGGLE_'.$iNetworkInterfaceId.'_'.$iNetblockId.'_'.$dns_record_id,
+					-title   => "Switch between update, lock (to original IP address $strIP, if it's updated) and delete modes for this DNS record",
+					-state   =>  $strDnsButtonState,
+					-label   => $strDnsButtonState,
+					-onclick => "updateNetworkInterfaceUI( this );",
+				},
+				$strDnsButtonState
 			);
 
 			# Prepare a hidden line for the additional DNS records
@@ -2229,276 +2318,322 @@ sub build_dns_box {
 					},
 					$cgi->div(
 						{
-							-class => 'irrelevant dnsrefcontent_'.$dns_record->{ 'dns_record_id' }
+							-class => 'irrelevant dnsrefcontent_'.$dns_record_id
 						}
 					)
 				)
 			);
 
-			# Add this dns line to the dns field
-			$dnsbox .= $cgi->Tr( $dnsline ).$dns_tr_refrecords;
+			# Prepare the attributes for the DNS PTR radio element
+			my $hPTRRadioAttributes = {
+				-type     => 'radio',
+				-title    => 'Set PTR for this DNS record',
+				-name     => 'DNS_PTR_'.$iNetworkInterfaceId.'_'.$iNetblockId,
+				-id       => 'DNS_PTR_'.$iNetworkInterfaceId.'_'.$iNetblockId.'_'.$dns_record_id,
+				-class    => "tracked dnsptr parent_level_netblock level_dns_record $strClassNetworkInterfaceId $strClassNetblockId $strClassDnsRecordId",
+				-value    => 'DNS_PTR_'.$iNetworkInterfaceId.'_'.$iNetblockId.'_'.$dns_record_id,
+				-label    => '',
+			};
+
+			# Set the radio for PTR
+			# Check the value from the previous update, if any
+			# If the value matches this radio id, it was selected
+			if( $self->cgi_parse_param( 'DNS_PTR_'.$iNetworkInterfaceId.'_'.$iNetblockId ) ne '' ) {
+				if(  $self->cgi_parse_param( 'DNS_PTR_'.$iNetworkInterfaceId.'_'.$iNetblockId ) eq 'DNS_PTR_'.$iNetworkInterfaceId.'_'.$iNetblockId.'_'.$dns_record_id ) {
+				  $hPTRRadioAttributes->{ '-checked' } = 'on';
+				}
+			# We have no previous value, let's apply the status from the database
+			} elsif( $dns_record->{ 'should_generate_ptr' } eq 'Y' ) {
+				$hPTRRadioAttributes->{ '-checked' } = 'on';
+			}
+			# The 'original' custom attribute always defautls to the database value
+			if( $dns_record->{ 'should_generate_ptr' } eq 'Y' ) {
+				$hPTRRadioAttributes->{ '-original' } = 'checked';
+			} else {
+				$hPTRRadioAttributes->{ '-original' } = '';
+			}
+
+			$dnsbox .= $cgi->Tr( { -class => "id_network_interface_$dns_record_id" },
+				$cgi->td( $strDnsButton )
+				.$dnsline
+				.$cgi->td( $cgi->input( $hPTRRadioAttributes ) )
+			)
+			.$dns_tr_refrecords;
 
 		} # end of loop on dns records
 
-		# wrap all DNS lines in a table
-		$dnsbox =	$cgi->table(
+		# We're now adding a template to create a new DNS record for the existing netblock
+		my $strNewDnsButtonState = $self->cgi_parse_param( 'DNS_TOGGLE_'.$iNetworkInterfaceId.'_'.$iNetblockId.'_new' );
+		$strNewDnsButtonState = $strNewDnsButtonState eq '' ? 'update' : $strNewDnsButtonState;
+		$strNewDnsButton = $cgi->button(
 			{
-			        -width		=> '100%',
-				-border		=> 0,
+				-type    => 'button',
+				-class   => "button_switch parent_level_netblock level_dns_record $strClassNetworkInterfaceId $strClassNetblockId id_dns_record_new",
+				-id      => 'DNS_TOGGLE_'.$iNetworkInterfaceId.'_'.$iNetblockId.'_new',
+				-name    => 'DNS_TOGGLE_'.$iNetworkInterfaceId.'_'.$iNetblockId.'_new',
+				-title   => '',
+				-state   => $strNewDnsButtonState,
+				-label   => 'new',
+			},
+			'new'
+		);
+
+		# Prepare the attributes for the DNS PTR radio element (for new DNS record)
+		my $hPTRNewRadioAttributes = {
+			-type     => 'radio',
+			-title    => 'Set PTR for this new DNS record',
+			-name     => 'DNS_PTR_'.$iNetworkInterfaceId.'_'.$iNetblockId,
+			-id       => 'DNS_PTR_'.$iNetworkInterfaceId.'_'.$iNetblockId.'_new',
+			-class    => "tracked dnsptr parent_level_netblock level_dns_record $strClassNetworkInterfaceId $strClassNetblockId id_dns_record_new",
+			-value    => 'DNS_PTR_'.$iNetworkInterfaceId.'_'.$iNetblockId.'_new',
+			-label    => '',
+		};
+
+		# Check the value from the previous update, if any
+		# If the value matches this radio id, it was selected
+		if( $self->cgi_parse_param( 'DNS_PTR_'.$iNetworkInterfaceId.'_'.$iNetblockId ) ne '' ) {
+			if(  $self->cgi_parse_param( 'DNS_PTR_'.$iNetworkInterfaceId.'_'.$iNetblockId ) eq 'DNS_PTR_'.$iNetworkInterfaceId.'_'.$iNetblockId.'_new' ) {
+				$hPTRNewRadioAttributes->{ '-checked' } = 'on';
+			}
+		}
+		# The 'original' custom attribute always defautls to unchecked for new records
+		$hPTRNewRadioAttributes->{ '-original' } = '';
+
+		# Populate the dns domain dropdown with the previous value after a failed update
+		my @dns_domain_id_values = ( '-1' );
+		my %dns_domain_id_labels = ( '-1' => '--Unset--' );
+		my $dns_domain_id_new = $self->cgi_parse_param( 'DNS_DOMAIN_ID_'.$iNetworkInterfaceId.'_'.$iNetblockId.'_new' );
+
+		# Do we have a previous value?
+		if( defined( $dns_domain_id_new ) and $dns_domain_id_new ne '' and $dns_domain_id_new ne '-1' ) {
+			# Get the domain name corresponding to the id from the database
+			my $sth = $self->prepare(
+				qq{ select soa_name from dns_domain where dns_domain_id = ? }
+			) || $self->return_db_err;
+			$sth->execute( $dns_domain_id_new ) || $self->return_db_err;
+			my ( $dns_domain_name_new ) = $sth->fetchrow_array;
+			# Do we have a valid and non empty result?
+			if( defined( $dns_domain_name_new ) and $dns_domain_name_new ne '' ) {
+				# Add the domain id to the values
+				push @dns_domain_id_values, $dns_domain_id_new;
+				# And add the domain (id,name) keypair to the labels
+				$dns_domain_id_labels{$dns_domain_id_new} = $dns_domain_name_new;
+			}
+		}
+
+		$dnsbox .= $cgi->Tr(
+			$cgi->td( { title => 'Add new DNS record', alt => 'Add new DNS record' }, $strNewDnsButton )
+			.$cgi->td(
+				$cgi->textfield( {
+					-type            => 'text',
+					-class           => "tracked dnsname parent_level_netblock level_dns_record $strClassNetworkInterfaceId $strClassNetblockId id_dns_record_new",
+					-textfield_width => 20,
+					-id              => 'DNS_NAME_'.$iNetworkInterfaceId.'_'.$iNetblockId.'_new',
+					-name            => 'DNS_NAME_'.$iNetworkInterfaceId.'_'.$iNetblockId.'_new',
+					-original        => '',
+					-value           => '',
+					-placeholder     => 'Create new DNS record',
+				} )
+				#	$dns_records, "DNS_NAME", [ 'network_interface_id', 'netblock_id', 'dns_record_id' ] )
+				. $cgi->popup_menu( {
+					-class    => "tracked dnsdomain parent_level_netblock level_dns_record $strClassNetworkInterfaceId $strClassNetblockId id_dns_record_new",
+					-id       => 'DNS_DOMAIN_ID_'.$iNetworkInterfaceId.'_'.$iNetblockId.'_new',
+					-name     => 'DNS_DOMAIN_ID_'.$iNetworkInterfaceId.'_'.$iNetblockId.'_new',
+					-values   => \@dns_domain_id_values,
+					-original => '-1',
+					-labels   => \%dns_domain_id_labels,
+					-default  => '-1',
+				} )
+			)
+			.$cgi->td( $cgi->input( $hPTRNewRadioAttributes ) )
+		);
+
+		# wrap all DNS lines in a table
+		$dnsbox = $cgi->table(
+			{
+			    -width			=> '100%',
+				-border			=> 0,
 				-cellspacing	=> 0,
 				-cellpadding	=> 0,
-				-class		=> 'interfacednstable'
+				-class			=> 'interfacednstable',
+				-width          => '100%',
 			},
 			$dnsbox
 		);
 
 	# There is no DNS record associated to this interface ip, display input fields
 	} else {
-		$dnsbox =	$cgi->table(
+		# Populate the empty dns_records array with just the keys needed to build the input fields
+		$dns_records->{'network_interface_id'} = $iNetworkInterfaceId;
+		$dns_records->{'netblock_id'} = $iNetblockId;
+		$dns_records->{'dns_record_id'} = 'new';
+		$strClassDnsRecordId = 'id_dns_record_new';
+
+		my $strNewDnsButtonState = $self->cgi_parse_param( 'DNS_TOGGLE_'.$iNetworkInterfaceId.'_'.$iNetblockId.'_new' );
+		$strNewDnsButtonState = $strNewDnsButtonState eq '' ? 'update' : $strNewDnsButtonState;
+		$strNewDnsButton = $cgi->button(
+			{
+				-type    => 'button',
+				-class   => "button_switch parent_level_netblock level_dns_record $strClassNetworkInterfaceId $strClassNetblockId $strClassDnsRecordId",
+				-id      => 'DNS_TOGGLE_'.$iNetworkInterfaceId.'_'.$iNetblockId.'_new',
+				-name    => 'DNS_TOGGLE_'.$iNetworkInterfaceId.'_'.$iNetblockId.'_new',
+				-title   => '',
+				-state   => $strNewDnsButtonState,
+				-label   => 'new',
+			},
+			'new'
+		);
+
+		# Prepare the attributes for the DNS PTR checkbox element (for new DNS record of new netblock)
+		my $hPTRNewCheckboxAttributes = {
+			-name     => 'DNS_PTR_'.$dns_records->{'network_interface_id'}.'_'.$dns_records->{'netblock_id'},
+			-id       => 'DNS_PTR_'.$dns_records->{'network_interface_id'}.'_'.$dns_records->{'netblock_id'}.'_new',
+			-class    => "tracked dnsptr parent_level_netblock level_dns_record $strClassNetworkInterfaceId $strClassNetblockId $strClassDnsRecordId",
+			-title    => 'Set PTR for this new DNS record',
+			-value    => 'DNS_PTR_'.$dns_records->{'network_interface_id'}.'_'.$dns_records->{'netblock_id'}.'_new',
+			-label    => '',
+		};
+
+		# Check the value from the previous failed update, if any
+		# Checkboxes are tricky because a value is present only if checked before submit
+		# So we have 3 cases:
+		# 1.- The form is not displayed after a failed update, default state is checked
+		# 2.- The form is displayed after a failed update and there is no value, state is unchecked
+		# 3.- The form is displayed after a failed update and there is a value, state is checked
+		# We can detect an update vs first display of the form by checking
+		# for the presence of __notemsg__ in the param array
+
+		# So, is that a failed update?
+		if( $self->cgi_parse_param( '__notemsg__' ) ne '' and $self->cgi_parse_param( '__notemsg__' ) ne '' ) {
+			# Do we have a value for the checkbox?
+			if( $self->cgi_parse_param( 'DNS_PTR_'.$iNetworkInterfaceId.'_'.$iNetblockId ) ne 'Update successful.' ) {
+				$hPTRNewCheckboxAttributes->{ '-checked' } = 'on';
+			}
+		# This is not an update but the first display of the form
+		} else {
+			$hPTRNewCheckboxAttributes->{ '-checked' } = 'on';
+		}
+		# The 'original' custom attribute always defautls to checked for the (first, obviously) new record of a new netblock
+		$hPTRNewCheckboxAttributes->{ '-original' } = 'checked';
+
+		# Populate the dns domain dropdown with the previous value after a failed update
+		my @dns_domain_id_values = ( '-1' );
+		my %dns_domain_id_labels = ( '-1' => '--Unset--' );
+		my $dns_domain_id_new = $self->cgi_parse_param( 'DNS_DOMAIN_ID_'.$dns_records->{'network_interface_id'}.'_'.$dns_records->{'netblock_id'}.'_new' );
+
+		# Do we have a previous value?
+		if( defined( $dns_domain_id_new ) and $dns_domain_id_new ne '' and $dns_domain_id_new ne '-1' ) {
+			# Get the domain name corresponding to the id from the database
+			my $sth = $self->prepare(
+				qq{ select soa_name from dns_domain where dns_domain_id = ? }
+			) || $self->return_db_err;
+			$sth->execute( $dns_domain_id_new ) || $self->return_db_err;
+			my ( $dns_domain_name_new ) = $sth->fetchrow_array;
+			# Do we have a valid and non empty result?
+			if( defined( $dns_domain_name_new ) and $dns_domain_name_new ne '' ) {
+				# Add the domain id to the values
+				push @dns_domain_id_values, $dns_domain_id_new;
+				# And add the domain (id,name) keypair to the labels
+				$dns_domain_id_labels{$dns_domain_id_new} = $dns_domain_name_new;
+			}
+		}
+
+		$dnsbox = $cgi->table(
 			{
 				-border		=> 0,
 				-cellspacing	=> 0,
 				-cellpadding	=> 0,
-				-class		=> 'interfacednstable empty'
+				-class		=> 'interfacednstable empty',
+				-width      => '100%',
 			},
 			$cgi->Tr(
-				$cgi->td(
-					$self->b_textfield( { -textfield_width => 20 },
-						$dns_records, "DNS_NAME", 'NEWORK_INTERFACE_ID' )
-					. $self->b_dropdown( $dns_records, "DNS_DOMAIN_ID", 'NETWORK_INTERFACE_ID' )
+				$cgi->td( { title => 'Add new DNS record', alt => 'Add new DNS record' }, $strNewDnsButton )
+				.$cgi->td(
+					$self->b_textfield(
+						{
+							-class           => "tracked dnsname parent_level_netblock level_dns_record $strClassNetworkInterfaceId $strClassNetblockId $strClassDnsRecordId",
+							-textfield_width => 20,
+							-placeholder     => 'Create new DNS record',
+							-original        => '',
+						},
+						$dns_records, "DNS_NAME", [ 'network_interface_id', 'netblock_id', 'dns_record_id' ]
+					)
+					# The DNS domain dropdown menu will be generated by asychronous ajax calls for performance reasons
+					. $cgi->popup_menu( {
+						-class    => "tracked dnsdomain parent_level_netblock level_dns_record $strClassNetworkInterfaceId $strClassNetblockId $strClassDnsRecordId",
+						-id       => 'DNS_DOMAIN_ID_'.$dns_records->{'network_interface_id'}.'_'.$dns_records->{'netblock_id'}.'_new',
+						-name     => 'DNS_DOMAIN_ID_'.$dns_records->{'network_interface_id'}.'_'.$dns_records->{'netblock_id'}.'_new',
+						-values   => \@dns_domain_id_values,
+						-labels   => \%dns_domain_id_labels,
+						-default  => '-1',
+						-original => '-1',
+					} )
+					.$cgi->span( { -style => 'display: inline-flex; width: 30px' } ) # Spacer needed to replace blue arrow
 				)
+				.$cgi->td( $cgi->checkbox( $hPTRNewCheckboxAttributes ) )
 			)
 		);
 	}
 	$dnsbox;
 }
 
-sub build_interface_box {
-	my ( $self, $values, $devid ) = @_;
+#sub build_dns_rr_table {
+#	my ( $self, $values ) = @_;
+#
+#	return undef if ( !$values );
+#
+#	my $cgi = $self->cgi || die "Could not create cgi";
+#	my $dbh = $self->dbh || die "Could not create dbh";
+#
+#	my $q = qq{
+#		select	dns.dns_record_id, dns.dns_name,
+#				dns.dns_domain_id, dom.soa_name
+#		  from	dns_record dns
+#				inner join dns_domain dom
+#					on dom.dns_domain_id = dns.dns_domain_id
+#				inner join network_interface_netblock ni
+#					on dns.netblock_id = ni.netblock_id
+#		 where	ni.network_interface_id = ?
+#		  and	dns.dns_record_id != ?
+#	};
+#	my $sth = $self->prepare($q) || $self->return_db_err($dbh);
+#
+#	my $rrt = "";
+#
+#	$sth->execute(
+#		$values->{ _dbx('NETWORK_INTERFACE_ID') },
+#		$values->{ _dbx('DNS_RECORD_ID') }
+#	);
+#	while ( my $hr = $sth->fetchrow_hashref ) {
+#		$rrt .= $cgi->Tr(
+#			$cgi->td( $hr->{ _dbx('DNS_NAME') } ),
+#			$cgi->td( $hr->{ _dbx('SOA_NAME') } ),
+#		);
+#	}
+#	$sth->finish;
+#
+#	if ( length($rrt) ) {
+#		return $cgi->div( { -align => 'center' },
+#			$cgi->b('DNS Round Robin Records') )
+#		  . $cgi->table($rrt);
+#	}
+#	undef;
+#}
 
-	my $dbh = $self->dbh || die "Could not create dbh";
-	my $cgi = $self->cgi || die "Could not create cgi";
-
-	my $defchecked = 'on';
-
-	my $xbox = $self->build_checkbox( $values, "Up", 'IS_INTERFACE_UP',
-		'NETWORK_INTERFACE_ID', $defchecked );
-	$xbox .= $self->build_checkbox( $values, "Should Manage",
-		'SHOULD_MANAGE', 'NETWORK_INTERFACE_ID', $defchecked );
-	$xbox .= $self->build_checkbox( $values, "Should Monitor",
-		'SHOULD_MONITOR', 'NETWORK_INTERFACE_ID', $defchecked );
-
-	$xbox .= $cgi->hr . "\n";
-
-	my $pnk = "";
-	if ( defined($values) ) {
-		$pnk = "_" . $values->{ _dbx('NETWORK_INTERFACE_ID') };
-	}
-	my $delem = "";
-	if ( defined($values) ) {
-
-		#	$delem .= $cgi->div($cgi->submit({-align => 'center', -valign => 'bottom',
-		#			-name=>'del_free_ip'.$pnk,
-		#			-label=>'Delete/Free All IPs'}));
-		#	$delem .= $cgi->div($cgi->submit({-align => 'center', -valign => 'bottom',
-		#			-name=>'del_reserve_ip'.$pnk,
-		#			-label=>'Delete/Rsv All IPs'}));
-		$delem .= $cgi->span( { -align => 'center' },
-			$cgi->b( { -align => 'center' }, "Delete Interface" ) );
-
-		# [XXX ] - need to make the class name in both -class and
-		# uncheck()
-		my $classname =
-		  'delete_int_class_INT_' . $values->{ _dbx('NETWORK_INTERFACE_ID') };
-		$delem .= $cgi->div(
-			$cgi->checkbox(
-				-class => $classname,
-				-id    => "rm_free_INTERFACE_"
-				  . $values->{ _dbx('NETWORK_INTERFACE_ID') },
-				,
-				-name => "rm_free_INTERFACE_"
-				  . $values->{ _dbx('NETWORK_INTERFACE_ID') },
-				,
-				-label => 'Delete/Free IPs',
-				-onClick =>
-				  "uncheck(\"rm_free_INTERFACE_$values->{_dbx('NETWORK_INTERFACE_ID')}\",\"$classname\");"
-			)
-		);
-		$delem .= $cgi->div(
-			$cgi->checkbox(
-				-class => $classname,
-				-id    => "rm_rsv_INTERFACE_"
-				  . $values->{ _dbx('NETWORK_INTERFACE_ID') },
-				,
-				-name => "rm_rsv_INTERFACE_"
-				  . $values->{ _dbx('NETWORK_INTERFACE_ID') },
-				,
-				-label => 'Delete/Reserve IPs',
-				-onClick =>
-				  "uncheck(\"rm_rsv_INTERFACE_$values->{_dbx('NETWORK_INTERFACE_ID')}\", \"$classname\");"
-			)
-		);
-	}
-
-	$xbox .= $delem;
-
-	my $ltd;
-
-	#
-	# The ability to change the interface name is not in the front end, but
-	# the backend supports it.  Changing this to just be the else case allows
-	# it to be edited in all cases.  Need to contemplate if it should be
-	# changable
-	#
-	if ( defined($values) ) {
-		$ltd .=
-		  $self->build_tr( {}, $values, "b_textfield", "Iface",
-			'NETWORK_INTERFACE_NAME', 'NETWORK_INTERFACE_ID' );
-
-		# $ltd .= $cgi->hidden('NETWORK_INTERFACE_NAME_'.$values->{_dbx('NETWORK_INTERFACE_ID')}, $values->{_dbx('NETWORK_INTERFACE_NAME')});
-	} else {
-		$ltd .=
-		  $self->build_tr( {}, $values, "b_textfield", "Iface",
-			'NETWORK_INTERFACE_NAME', 'NETWORK_INTERFACE_ID' );
-	}
-	$ltd .= $self->build_tr( $values, "b_textfield", "MAC", 'MAC_ADDR',
-		'NETWORK_INTERFACE_ID' );
-	$self->textfield_sizing(0);
-	$ltd .= $self->build_tr( $values, "b_textfield", "IP", 'IP',
-		'NETWORK_INTERFACE_ID' );
-	$ltd .= $cgi->Tr(
-		$cgi->td( { -align => 'right' }, $cgi->b("DNS:") ),
-		$cgi->td(
-			$self->b_textfield( $values, 'DNS_NAME', 'NETWORK_INTERFACE_ID' ),
-			$self->b_dropdown(
-				$values, 'DNS_DOMAIN_ID', 'NETWORK_INTERFACE_ID'
-			)
-		)
-	);
-	$self->textfield_sizing(1);
-	$ltd .= $self->build_tr( $values, "b_dropdown", "Type",
-		'NETWORK_INTERFACE_TYPE', 'NETWORK_INTERFACE_ID' );
-
-	if ( defined($values) ) {
-		my $dns = build_dns_rr_table( $self, $values );
-		if ($dns) {
-			$ltd .= $cgi->Tr(
-				{
-					-style => 'background: lightblue',
-					-align => 'center'
-				},
-				$cgi->td( { -colspan => 2 }, $dns )
-			);
-			undef $dns;
-		}
-	}
-	$ltd .= $cgi->table($ltd) . "\n";
-
-	my $rv = "";
-
-	my $action_url = "write/update_interface.pl";
-	my $hidden     = "";
-	if ( !defined($values) ) {
-		$rv .= $cgi->h4( { -align => 'center' }, 'Add interface' ) . "\n";
-		$action_url = "write/add_interface.pl";
-		$hidden     = $cgi->hidden(
-			-name    => 'DEVICE_ID',
-			-default => $devid
-		);
-	} else {
-		$hidden = $cgi->hidden(
-			-name => 'NETWORK_INTERFACE_ID_'
-			  . $values->{ _dbx('NETWORK_INTERFACE_ID') },
-			-default => $values->{ _dbx('NETWORK_INTERFACE_ID') }
-		);
-	}
-
-	my %args = (
-		-border => 1,
-		-width  => '100%',
-	);
-
-	if ( defined($values) && $values->{ _dbx('IS_PRIMARY') } eq 'Y' ) {
-		$args{-class} = 'primaryinterface';
-	}
-
-	$rv .= $cgi->table(
-		\%args,
-		$cgi->Tr(
-			$hidden,
-			$cgi->td( { -width => '85%' }, $ltd ),
-			$cgi->td(
-				{
-					-width  => '15%',
-					-align  => 'left',
-					-valign => 'top'
-				},
-				$xbox
-			),
-		)
-	);
-	undef $xbox;
-	undef $ltd;
-	$rv;
-}
-
-sub build_dns_rr_table {
-	my ( $self, $values ) = @_;
-
-	return undef if ( !$values );
-
-	my $cgi = $self->cgi || die "Could not create cgi";
-	my $dbh = $self->dbh || die "Could not create dbh";
-
-	my $q = qq{
-		select	dns.dns_record_id, dns.dns_name,
-				dns.dns_domain_id, dom.soa_name
-		  from	dns_record dns
-				inner join dns_domain dom
-					on dom.dns_domain_id = dns.dns_domain_id
-				inner join network_interface_netblock ni
-					on dns.netblock_id = ni.netblock_id
-		 where	ni.network_interface_id = ?
-		  and	dns.dns_record_id != ?
-	};
-	my $sth = $self->prepare($q) || $self->return_db_err($dbh);
-
-	my $rrt = "";
-
-	$sth->execute(
-		$values->{ _dbx('NETWORK_INTERFACE_ID') },
-		$values->{ _dbx('DNS_RECORD_ID') }
-	);
-	while ( my $hr = $sth->fetchrow_hashref ) {
-		$rrt .= $cgi->Tr(
-			$cgi->td( $hr->{ _dbx('DNS_NAME') } ),
-			$cgi->td( $hr->{ _dbx('SOA_NAME') } ),
-		);
-	}
-	$sth->finish;
-
-	if ( length($rrt) ) {
-		return $cgi->div( { -align => 'center' },
-			$cgi->b('DNS Round Robin Records') )
-		  . $cgi->table($rrt);
-	}
-	undef;
-}
-
-sub mac_int_to_text {
-	my ($in) = @_;
-
-	my $mac;
-	if ( defined($in) ) {
-		$mac = "000000000000";
-		$in =~ s/\s+//g;
-		$mac = substr( $mac, 0, length($mac) - length($in) );
-		$mac .= $in;
-		$mac =~ s/(\S\S)/$1:/g;
-		$mac =~ s/:$//;
-	}
-	$mac;
-}
+#sub mac_int_to_text {
+#	my ($in) = @_;
+#
+#	my $mac;
+#	if ( defined($in) ) {
+#		$mac = "000000000000";
+#		$in =~ s/\s+//g;
+#		$mac = substr( $mac, 0, length($mac) - length($in) );
+#		$mac .= $in;
+#		$mac =~ s/(\S\S)/$1:/g;
+#		$mac =~ s/:$//;
+#	}
+#	$mac;
+#}
 
 ##############################################################################
 #

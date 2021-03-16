@@ -536,7 +536,5 @@ $(document).ready(function(){
 
 	configure_autocomplete();
 
-
 	create_dns_reference_jquery("table.dnstable");
-
 });

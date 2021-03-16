@@ -1385,6 +1385,7 @@ sub b_dropdown {
 	my $preidfix = $params->{'-preidfix'} || "";
 	my $suffix   = $params->{'-suffix'} || "";
 	my $callback = $params->{'-callback'};
+	my $original = $params->{'-original'};
 
 	# [XXX] need to consider making id/name always the same?
 	my $id = $params->{'-id'};
@@ -2003,6 +2004,7 @@ sub b_dropdown {
 	$popupargs->{-values}     = \@list if ( $#list >= 0 );
 	$popupargs->{-labels}     = \%list if ( $#list >= 0 );
 	$popupargs->{-default}    = $default;
+	$popupargs->{-original}   = $original if ( defined($original) );
 	$popupargs->{-onChange}   = $onchange if ( defined($onchange) );
 	$popupargs->{-class}      = $class if ( defined($class) );
 	$popupargs->{-attributes} = \%attr;
@@ -2090,13 +2092,20 @@ sub b_textfield {
 	$field     = _dbx($field)     if ( defined($field) );
 	$pkeyfield = _dbx($pkeyfield) if ( defined($pkeyfield) );
 
-	my $default  = $params->{'-default'};
-	my $ip0      = $params->{'-allow_ip0'};
-	my $class    = $params->{'-class'};
-	my $editoff  = $params->{'-noEdit'} || 'never';
-	my $prefix   = $params->{'-prefix'} || "";
-	my $preidfix = $params->{'-preidfix'} || "";
-	my $suffix   = $params->{'-suffix'} || "";
+	my $default     = $params->{'-default'};
+	my $ip0         = $params->{'-allow_ip0'};
+	my $class       = $params->{'-class'};
+	my $alt         = $params->{'-alt'};
+	my $onchange    = $params->{'-onChange'};
+	my $onkeyup     = $params->{'-onKeyUp'};
+	my $placeholder = $params->{'-placeholder'};
+	my $pattern     = $params->{'-pattern'};
+	my $defaultValue= $params->{'-defaultValue'};
+	my $original    = $params->{'-original'};
+	my $editoff     = $params->{'-noEdit'} || 'never';
+	my $prefix      = $params->{'-prefix'} || "";
+	my $preidfix    = $params->{'-preidfix'} || "";
+	my $suffix      = $params->{'-suffix'} || "";
 
 	my $cgi = $self->cgi;
 
@@ -2234,12 +2243,19 @@ sub b_textfield {
 	$disabled = 1 if ( $params->{-disabled} );
 
 	my $args = {};
-	$args->{'-name'}    = $webname;
-	$args->{'-id'}      = $webname;
-	$args->{'-class'}   = $class if ( defined($class) );
-	$args->{'-default'} = $allf if ( defined($allf) );
-	$args->{'-size'}    = $size if ($size);
-	$args->{'-maxlength'} = 2048;    ## [XXX] probably need to rethink!
+	$args->{'-name'}        = $webname;
+	$args->{'-id'}          = $webname;
+	$args->{'-class'}       = $class if ( defined($class) );
+	$args->{'-alt'}         = $alt if ( defined($alt) );
+	$args->{'-onChange'}    = $onchange if ($onchange);
+	$args->{'-onKeyUp'}     = $onkeyup if ($onkeyup);
+	$args->{'-placeholder'} = $placeholder if ( defined($placeholder) );
+	$args->{'-pattern'}     = $pattern if ( defined($pattern) );
+	$args->{'-defaultValue'}= $$defaultValue if ( defined($defaultValue) );
+	$args->{'-default'}     = $allf if ( defined($allf) );
+	$args->{'-original'}    = $original if ( defined($original) );
+	$args->{'-size'}        = $size if ($size);
+	$args->{'-maxlength'}   = 2048;    ## [XXX] probably need to rethink!
 
 	if ($disabled) {
 		if ( $args->{-class} ) {
@@ -2385,6 +2401,10 @@ sub build_checkbox {
 
 	if ( defined( $params->{-class} ) ) {
 		$args->{-class} = $params->{-class};
+	}
+
+	if ( defined( $params->{-original} ) ) {
+		$args->{-original} = $params->{-original};
 	}
 
 	my $cb = $cgi->checkbox( $args, );

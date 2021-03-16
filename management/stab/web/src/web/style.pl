@@ -75,7 +75,7 @@ sub do_style_dump {
 		print <<END;
 
 BODY { 
-	background: url($root/images/development-background.png ); 
+	background: url($root/images/development-background.png );
 }
 a { color: blue }
 a:visited { color: purple }
@@ -87,6 +87,8 @@ END
 
 BODY {
 	Font-Family: Verdana, Arial, Helvetica, MS Sans Serif;
+	overflow: auto;
+	overflow-y: scroll;
 }
 
 div.introblurb {
@@ -438,6 +440,10 @@ tr.intadd {
 	background: grey;
 }
 
+td.intadd {
+	background: grey;
+}
+
 table.dnstable {
 	text-align: center;
 	margin: auto;
@@ -453,13 +459,16 @@ table.dnstable input.dnsttl {
 }
 
 table.dnstable input.dnsvalue {
-	width: 20em;
+	width: 29em;
 }
 
 table.dnstable input.dnsname {
 	width: 10em;
 }
 
+select.dnsdomain {
+	width: 25em;
+}
 
 .autocomplete-suggestions { border: 1px solid #999; background: lightyellow; overflow: auto; font-size: 80%;}
 .autocomplete-suggestion { padding: 2px 5px; white-space: nowrap; overflow: hidden; }
@@ -484,7 +493,9 @@ img.subnet {
 	width: 1em;
 }
 
-.intableheader {
+/* This affects both the Add Network Interface and the Add IP Address
+   headers */
+.header_add_item {
 	text-align: center;
 	font-weight: bold;
 	background: orange;
@@ -497,16 +508,58 @@ table.interfacetable {
 	border: 1px solid;
 }
 
-table.interfacetable td {
-	vertical-align: middle;
-	margin: auto;
-	text-align: center;
+table.interfacetable tr th:nth-child(2n), table.interfacetable tr td:nth-child(2n) {
+	background: #EEEEEE;
+}
+table.interfacetable tr th:nth-child(2n+1), table.interfacetable tr td:nth-child(2n+1) {
+	background: #CCCCCC;
+}
+
+table.interfacetable tr.network_interface_first_line {
 	border-top: 1px solid;
-	border-bottom: 1px solid;
+}
+
+/* This affects the Add Network Interface header */
+table.interfacetable tr.header_add_item {
+	border-top: 1px solid;
+}
+
+/* This affects the Add IP Address header */
+table.interfacetable td.header_add_item {
+	border-top: 1px solid;
+}
+
+table.interfacednstable tr th:nth-child(2n), table.interfacednstable tr td:nth-child(2n) {
+	background: #EEEEFF;
+}
+table.interfacednstable tr th:nth-child(2n+1), table.interfacednstable tr td:nth-child(2n+1) {
+	background: #CCCCDD;
+}
+
+
+table.interfacetable td {
+	vertical-align: top;
+	margin: auto;
+	text-align: left;
+	/*border-top: 1px solid;
+	border-bottom: none;*/
+}
+
+/* This is required to remove all interferring browser styles */
+table.interfacetable input, table.interfacetable select {
+	/*-webkit-appearance: none;*/
+	border: 1px solid lightgray;
+	border-radius: 1px;
 }
 
 table.interfacednstable td {
 	border: none;
+}
+
+table.interfacetable tr td.horizontal_separator {
+    border: none;
+	height: 10px;
+	/*background-color: transparent;*/
 }
 
 table.dnsrefroot {
@@ -620,6 +673,86 @@ img.button {
 	vertical-align: middle;
 }
 
+.toggle_container {
+  display: inline-flex;
+  height: 14px;
+  background: lightgray;
+  cursor: pointer;
+  user-select: none;
+  border-radius: 30%;
+  box-shadow: inset 0 0 0 2px gray;
+  color: darkgray;
+  padding-top: 4px;
+  padding-bottom: 0px;
+  padding-left: 4px;
+  padding-right: 16px;
+}
+
+.toggle_container.toggled {
+  background: #bbbbff;
+  padding-left: 16px;
+  padding-right: 4px;
+  color: #0000cc;
+}
+
+.toggle_container:hover {
+  box-shadow: inset 0 0 0 2px #333333;
+  color: black;
+}
+
+.toggle_switch {
+  display: inline-flex;
+  cursor: pointer;
+  user-select: none;
+  width: 10px;
+  height: 10px;
+  border-radius: 50%;
+  background-color: black;
+}
+
+table.interfacetable input.button_switch, table.interfacetable input.button_switch[value='new'] {
+  color: black;
+  padding: 1px 10px;
+  /*text-decoration: none;*/
+  width: 6em;
+}
+table.interfacetable input.button_switch[value='new'] {
+  background-color: #C0C0C0;
+  border: 1px solid transparent;
+  cursor: auto;
+}
+table.interfacetable input.button_switch {
+  background-color: #AAAAAA;
+  border: 1px solid #808080;
+  cursor: pointer;
+}
+table.interfacetable input.button_switch:hover{
+  border: 1px solid blue;
+}
+
+tr.marked_for_delete, td.marked_for_delete, input.marked_for_delete, select.marked_for_delete {
+  box-shadow: inset 0 0 0 100px rgba(255, 128, 128, 0.2);
+  mix-blend-mode: multiply;
+}
+
+tr.marked_for_unlink, td.marked_for_unlink, input.marked_for_unlink, select.marked_for_unlink {
+  box-shadow: inset 0 0 0 100px rgba(255, 255, 128, 0.2);
+  mix-blend-mode: multiply;
+}
+
+tr.marked_for_lock, td.marked_for_lock, input.marked_for_lock, select.marked_for_lock {
+  box-shadow: inset 0 0 0 100px rgba(128, 128, 255, 0.2);
+  mix-blend-mode: multiply;
+}
+
+/*.marked_for_update tr, .marked_for_update td, .marked_for_update input, .marked_for_update select {
+  box-shadow: none;
+}*/
+
+table.interfacetable .dnsptr{
+  width: 2em;
+}
+
 div.description {
 	border: 3px solid;
 	text-align: center;
@@ -650,6 +783,18 @@ td.correction {
 td.correction input { 
 	width: 100%;
 }
+
+/* Color for input fields with user-updated value */
+input.tracked.changed, select.tracked.changed, textarea.tracked.changed {
+	/*color: blue;*/
+	/*border: 1px solid magenta;*/
+	box-shadow: inset 0 0 0 1px rgb(255, 128, 255, 1.0), 0 0 0 2px rgb(255, 128, 255, 1.0);
+}
+
+/* Color for input fields with default initial value - not needed? */
+/*input.tracked, select.tracked {
+	color: black;
+}*/
 
 input.attestsubmit { 
 	background-color: green;
@@ -703,6 +848,40 @@ tr.rowrm {
 li.rmrow {
 	background: red;
 	text-decoration: line-through;
+}
+
+.mark_for_delete {
+	background: red;
+	text-decoration: line-through;
+}
+
+/*
+	This is a CSS setup to make an image as the clickable element of an input
+	checkbox
+*/
+input.mark_for_delete_control[type=checkbox] {
+	display: none;
+}
+input.mark_for_delete_control[type=checkbox] + label {
+	display:inline-block;
+	background:url("/stabcons/redx.jpg") no-repeat;
+	height: 18px;
+	width: 18px;
+	background-size: 100%;
+}
+input.mark_for_delete_control[type=checkbox]:hover + label {
+	display:inline-block;
+	background:url("/stabcons/Octagon_delete.svg") no-repeat;
+	height: 18px;
+	width: 18px;
+	background-size: 100%;
+}
+input.mark_for_delete_control[type=checkbox]:checked + label {
+	display:inline-block;
+	background:url("/stabcons/Octagon_delete.svg") no-repeat;
+	height: 18px;
+	width: 18px;
+	background-size: 100%;
 }
 
 td.pendingrm * {
@@ -809,41 +988,6 @@ div.collectionexpandview {
 }
 div.collectionexpandview ul {
 	text-align: left;
-}
-
-.control_collapsed {
-	height: 1.2em;
-	width: 1.2em;
-	font-size: 1.0em;
-	border: 1px solid;
-	user-select: none;
-	cursor: pointer;
-	display: flex;
-	align-items: center;
-	justify-content: center;
-}
-
-.control_collapsed:hover {
-	transform: scale(1.2,1.2);
-	color: blue;
-}
-
-.control_expanded {
-	height: 1.2em;
-	width: 1.2em;
-	font-size: 1.0em;
-	border: 1px solid;
-	user-select: none;
-	cursor: pointer;
-	transform: scale(1.0,-1.0);
-	display: flex;
-	align-items: center;
-	justify-content: center;
-}
-
-.control_expanded:hover {
-	transform: scale(1.2,-1,2);
-	color: blue;
 }
 
 END
