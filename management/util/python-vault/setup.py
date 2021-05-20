@@ -1,5 +1,5 @@
 #!/usr/bin/env python
-# Copyright 2017-2019 Ryan D. Williams
+# Copyright 2021 Bernard Jech
 # 
 # Licensed under the Apache License, Version 2.0 (the "License");
 # you may not use this file except in compliance with the License.
@@ -17,7 +17,7 @@ import subprocess
 from distutils.core import setup
 
 # this should be pulled in automatically
-version = '0.90.13'
+version = '0.90.10'
 
 classifiers = [
     "Topic :: Utilities",
@@ -25,15 +25,14 @@ classifiers = [
 ]
 
 setup(
-    name = 'jazzhands_appauthal',
+    name = 'jazzhands_vault',
     version = version,
     url = 'http://www.jazzhands.net/',
-    author = 'Ryan D Williams',
-    author_email = 'rdw@xandr.com',
+    author = 'Bernard Jech',
+    author_email = 'bernardjech@yahoo.com',
     license = 'ALv2',
     package_dir = {'': 'src/lib'},
-    packages = ['jazzhands_appauthal'],
-    description = 'Provides generic authentication abstraction libraries.'
-        ' Currently supports returning unified config interface for Postrgres and MySQL',
+    packages = ['jazzhands_vault'],
+    description = 'Module for accessing Hashicorp Vault.',
     classifiers = classifiers,
 )

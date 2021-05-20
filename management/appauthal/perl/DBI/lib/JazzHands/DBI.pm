@@ -113,6 +113,10 @@ The APPAUTHAL_CONFIG config can be set to a pathname to a json configuration
 file that will be used instead of the optional global config file.  If this
 variable is set, the config file becomes required.
 
+=head1 BUGS
+
+Some ODBC drivers, such as Vertica, require the ODBCINI environment variable
+to be set. You can use the "onload" section of the configuration file to set it.
 
 =head1 AUTHORS
 
@@ -395,13 +399,20 @@ sub build_and_connect($$) {
 	my $dbstr = "dbi:${dbd}:" . join( ";", sort @vals );
 	my $dbh;
 
+	my $print_error = $dbiflags && exists($dbiflags->{PrintError}) && $dbiflags->{PrintError};
+
+	$dbiflags ||= {};
+	$dbiflags->{PrintError} = 0;
+
 	if ( $opt->{cached} ) {
 		$dbh = DBI->connect_cached( $dbstr, $user, $pass, $dbiflags );
 	} else {
 		$dbh = DBI->connect( $dbstr, $user, $pass, $dbiflags );
 	}
 
-	$dbh;
+	$dbh->{PrintError} = $print_error if $dbh;
+
+	return $dbh;
 }
 
 sub do_database_connect {
@@ -445,6 +456,15 @@ sub do_database_connect {
 			'Compress'       => 'mysql_compression',
 			'ConnectTimeout' => 'mysql_connect_timeout',
 			'SSLMode'        => 'mysql_ssl',
+		},
+		'odbc' => {
+			'_DBD'	   => 'ODBC',
+			'DSN'	   => 'dsn',
+			'DBName'   => 'database',
+			'DBDriver' => 'driver',
+			'DBHost'   => 'server',
+			'DBPort'   => 'port',
+			'SSLMode'  => 'sslmode',
 		},
 		'tds' => {
 			'_DBD' => 'Sybase'

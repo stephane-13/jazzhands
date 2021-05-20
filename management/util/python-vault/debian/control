@@ -1,4 +1,4 @@
-Source: python-jazzhands-appauthal
+Source: python-jazzhands-vault
 Section: unknown
 Priority: extra
 Maintainer: JazzHands Project <release@jazzhands.net>
@@ -10,12 +10,12 @@ XS-Python-Version: >= 2.7
 XS-Python3-Version: >= 3.4
 Homepage: http://www.jazzhands.net/
 
-Package: python-jazzhands-appauthal
+Package: python-jazzhands-vault
 Architecture: any
-Description:
- python appauthal interface
+Depends: python-requests
+Description: Python Vault interface
 
-Package: python3-jazzhands-appauthal
+Package: python3-jazzhands-vault
 Architecture: any
-Description:
- python3 appauthal interface
+Depends: python3-requests
+Description: Python3 Vault interface
